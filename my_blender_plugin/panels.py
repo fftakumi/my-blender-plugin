@@ -18,6 +18,9 @@ class MYPLUGIN_PT_main(bpy.types.Panel):
         col = layout.column(align=True)
         col.operator(operators.MYPLUGIN_OT_hello.bl_idname, icon="INFO")
         col.operator(operators.MYPLUGIN_OT_add_cube_grid.bl_idname, icon="MESH_CUBE")
+        col.operator(
+            operators.MYPLUGIN_OT_fit_body_to_corset.bl_idname, icon="MOD_SHRINKWRAP"
+        )
 
 
 _classes = (MYPLUGIN_PT_main,)
