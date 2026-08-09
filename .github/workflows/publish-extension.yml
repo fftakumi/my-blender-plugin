@@ -37,7 +37,7 @@ jobs:
 
       - name: Generate index.json
         run: |
-          ZIP=$(ls dist/my_blender_plugin-*.zip)
+          ZIP=$(ls dist/my_blender_plugin-[0-9]*.zip)
           python3 scripts/generate_index.py "$ZIP" dist/index.json
           cat dist/index.json
 
