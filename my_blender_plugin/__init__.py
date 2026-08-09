@@ -5,7 +5,7 @@
 bl_info = {
     "name": "My Blender Plugin",
     "author": "fftakumi",
-    "version": (0, 2, 2),
+    "version": (0, 3, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > My Plugin",
     "description": "自分用のBlenderプラグイン",
