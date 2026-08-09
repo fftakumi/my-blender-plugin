@@ -1,3 +1,5 @@
+import hashlib
+
 import bpy
 
 
@@ -47,25 +49,48 @@ def proximity_distances(fit_distance, falloff):
     return (fit_distance + falloff, fit_distance)
 
 
+# Blender の名前(モディファイア・頂点グループ・シェイプキー)は最大63バイトで、
+# 超えると黙って切り詰められ、以後の名前検索がすべて失敗する
+_NAME_MAX_BYTES = 63
+_LONGEST_FIT_PREFIX = "MYPLUGIN_FitVWProx_"
+
+
+def fit_name_token(corset_name):
+    """コルセット名から、63バイト制限内に収まる決定的なトークンを作る純粋関数
+
+    長すぎる名前はバイト境界で切り詰め、衝突しないよう短いハッシュを付ける。
+    """
+    budget = _NAME_MAX_BYTES - len(_LONGEST_FIT_PREFIX.encode("utf-8"))
+    encoded = corset_name.encode("utf-8")
+    if len(encoded) <= budget:
+        return corset_name
+    digest = hashlib.sha1(encoded).hexdigest()[:6]
+    keep = budget - 7  # "_" + ハッシュ6桁ぶんを確保
+    truncated = encoded[:keep].decode("utf-8", errors="ignore")
+    return truncated + "_" + digest
+
+
 def fit_names(corset_name):
     """コルセット名から、フィットに使う頂点グループ・モディファイア・シェイプキーの名前を返す純粋関数
 
     決定的な命名にして、再実行時に前回分を見つけて削除できるようにする。
     """
+    token = fit_name_token(corset_name)
     return {
-        "vertex_group": "myplugin_fit_" + corset_name,
-        "vwp": "MYPLUGIN_FitVWProx_" + corset_name,
-        "shrinkwrap": "MYPLUGIN_FitShrink_" + corset_name,
-        "smooth": "MYPLUGIN_FitSmooth_" + corset_name,
-        "shapekey": "Fit_" + corset_name,
+        "vertex_group": "myplugin_fit_" + token,
+        "vwp": "MYPLUGIN_FitVWProx_" + token,
+        "shrinkwrap": "MYPLUGIN_FitShrink_" + token,
+        "smooth": "MYPLUGIN_FitSmooth_" + token,
+        "shapekey": "Fit_" + token,
     }
 
 
 def modifier_insert_index(modifier_types):
-    """既存モディファイアのタイプ一覧から、フィット用モディファイアの挿入位置を返す純粋関数
+    """既存モディファイアのタイプ一覧から、シェイプキー焼き込み用の挿入位置を返す純粋関数
 
-    Armature より後ろに置くとポーズ空間で締め付けが評価されて破綻するため、
-    最初の Armature の直前(無ければ末尾)に挿入する。
+    焼き込みはレスト空間で確定させる必要があるため、最初の Armature の直前
+    (無ければ末尾)に挿入する。モディファイアとして残す場合はポーズ後の
+    コルセットに追従させるため末尾のまま(この関数は使わない)。
     """
     for index, modifier_type in enumerate(modifier_types):
         if modifier_type == "ARMATURE":
@@ -187,6 +212,13 @@ class MYPLUGIN_OT_fit_body_to_corset(bpy.types.Operator):
 
         body = bpy.data.objects[body_name]
         corset = bpy.data.objects[corset_name]
+        if self.as_shapekey and body.data.users > 1:
+            self.report(
+                {"ERROR"},
+                "素体メッシュがマルチユーザー(リンク複製)のためシェイプキーに焼き込めません。"
+                "オブジェクト > 関係 > シングルユーザー化 を先に行ってください",
+            )
+            return {"CANCELLED"}
         names = fit_names(corset_name)
 
         self._remove_previous(body, names)
@@ -227,7 +259,11 @@ class MYPLUGIN_OT_fit_body_to_corset(bpy.types.Operator):
         body.select_set(True)
         context.view_layer.objects.active = body
         try:
-            if insert_at < stack_len_before:
+            # 焼き込み時のみ Armature より前(レスト空間)へ移動する。
+            # モディファイアとして残す場合は末尾のまま: Shrinkwrap のターゲットは
+            # 評価済み(ポーズ後)のコルセットなので、Armature の後ろに置かないと
+            # ポーズを付けた時にレスト座標をポーズ後のコルセットへ投影して破綻する
+            if self.as_shapekey and insert_at < stack_len_before:
                 for offset_index, mod_name in enumerate(
                     (names["vwp"], names["shrinkwrap"], names["smooth"])
                 ):
@@ -235,7 +271,14 @@ class MYPLUGIN_OT_fit_body_to_corset(bpy.types.Operator):
                         modifier=mod_name, index=insert_at + offset_index
                     )
             if self.as_shapekey:
-                self._bake_as_shapekey(context, body, names)
+                try:
+                    self._bake_as_shapekey(context, body, names)
+                except RuntimeError as error:
+                    self.report(
+                        {"ERROR"},
+                        "シェイプキーへの焼き込みに失敗しました: %s" % error,
+                    )
+                    return {"CANCELLED"}
         finally:
             body.select_set(False)
             for obj in prev_selected:
@@ -269,36 +312,71 @@ class MYPLUGIN_OT_fit_body_to_corset(bpy.types.Operator):
 
     def _bake_as_shapekey(self, context, body, names):
         """構築したモディファイアをシェイプキー Fit_<コルセット名> 1本に焼き込む(要: bodyがアクティブ)"""
-        # VWP のウェイトをメッシュに焼く。表情シェイプキーを持つメッシュ(VRM素体など)では
-        # modifier_apply が拒否されるため、評価済みオブジェクトからウェイトをコピーする
+        # 表情など既存シェイプキーの現在値が焼き込み結果に混入しないよう、
+        # 焼き込みの間はすべて 0 にして、終了後(失敗時も)に元へ戻す
+        saved_key_values = {}
+        shape_keys = body.data.shape_keys
+        if shape_keys is not None:
+            for key_block in shape_keys.key_blocks:
+                saved_key_values[key_block.name] = key_block.value
+                key_block.value = 0.0
         try:
-            bpy.ops.object.modifier_apply(modifier=names["vwp"])
-        except RuntimeError:
-            self._bake_proximity_weights(context, body, names)
-            body.modifiers.remove(body.modifiers[names["vwp"]])
+            # VWP のウェイトをメッシュに焼く。シェイプキーを持つメッシュ(VRM素体など)では
+            # modifier_apply が拒否されるため、評価済みオブジェクトからウェイトをコピーする
+            try:
+                bpy.ops.object.modifier_apply(modifier=names["vwp"])
+            except RuntimeError:
+                if body.data.shape_keys is None:
+                    # シェイプキー以外の原因の失敗はフォールバックせず、そのまま報告する
+                    raise
+                self._bake_proximity_weights(context, body, names)
+                body.modifiers.remove(body.modifiers[names["vwp"]])
 
-        # シェイプキーはモディファイアより先に評価されるため、Shrinkwrap のキーを 1.0 に
-        # した状態で Smooth を焼くと「締め付け+スムーズ」の合成結果が最終キーに入る
-        shrink_key = self._apply_as_shapekey(body, names["shrinkwrap"])
-        shrink_key.value = 1.0
-        final_key = self._apply_as_shapekey(body, names["smooth"])
-        body.shape_key_remove(shrink_key)
-        final_key.name = names["shapekey"]
-        final_key.value = 1.0
+            # シェイプキーはモディファイアより先に評価されるため、Shrinkwrap のキーを 1.0 に
+            # した状態で Smooth を焼くと「締め付け+スムーズ」の合成結果が最終キーに入る
+            shrink_key = self._apply_as_shapekey(body, names["shrinkwrap"])
+            shrink_key.value = 1.0
+            final_key = self._apply_as_shapekey(body, names["smooth"])
+            body.shape_key_remove(shrink_key)
+            final_key.name = names["shapekey"]
+            final_key.value = 1.0
+        finally:
+            shape_keys = body.data.shape_keys
+            if shape_keys is not None:
+                for key_block in shape_keys.key_blocks:
+                    if key_block.name in saved_key_values:
+                        key_block.value = saved_key_values[key_block.name]
 
     def _bake_proximity_weights(self, context, body, names):
-        """評価済み(モディファイア適用後)の頂点ウェイトを元メッシュの頂点グループへコピーする"""
-        depsgraph = context.evaluated_depsgraph_get()
-        eval_body = body.evaluated_get(depsgraph)
-        group_index = body.vertex_groups[names["vertex_group"]].index
-        vertex_group = body.vertex_groups[names["vertex_group"]]
-        for vertex in eval_body.data.vertices:
-            weight = 0.0
-            for element in vertex.groups:
-                if element.group == group_index:
-                    weight = element.weight
-                    break
-            vertex_group.add([vertex.index], weight, "REPLACE")
+        """評価済み(VWP適用後)の頂点ウェイトを元メッシュの頂点グループへコピーする
+
+        Mirror/Subsurf など頂点数を変えるモディファイアがあると番号の対応が崩れるため、
+        評価の間は VWP 以外のモディファイアを一時的に無効化する。
+        """
+        saved_visibility = []
+        for modifier in body.modifiers:
+            if modifier.name != names["vwp"]:
+                saved_visibility.append((modifier, modifier.show_viewport))
+                modifier.show_viewport = False
+        try:
+            depsgraph = context.evaluated_depsgraph_get()
+            eval_body = body.evaluated_get(depsgraph)
+            if len(eval_body.data.vertices) != len(body.data.vertices):
+                raise RuntimeError(
+                    "評価後の頂点数が元メッシュと一致しないため、ウェイトを焼き込めません"
+                )
+            vertex_group = body.vertex_groups[names["vertex_group"]]
+            group_index = vertex_group.index
+            for vertex in eval_body.data.vertices:
+                weight = 0.0
+                for element in vertex.groups:
+                    if element.group == group_index:
+                        weight = element.weight
+                        break
+                vertex_group.add([vertex.index], weight, "REPLACE")
+        finally:
+            for modifier, visible in saved_visibility:
+                modifier.show_viewport = visible
 
     def _apply_as_shapekey(self, body, modifier_name):
         """モディファイアをシェイプキーとして適用し、生成されたキーを返す"""

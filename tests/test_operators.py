@@ -2,6 +2,7 @@ import pytest
 
 from my_blender_plugin.operators import (
     MYPLUGIN_OT_fit_body_to_corset,
+    fit_name_token,
     fit_names,
     grid_positions,
     modifier_insert_index,
@@ -123,6 +124,26 @@ def test_fit_names_deterministic_and_distinct_per_corset():
     a = set(fit_names("CorsetA").values())
     b = set(fit_names("CorsetB").values())
     assert a.isdisjoint(b)
+
+
+def test_fit_name_token_short_name_unchanged():
+    assert fit_name_token("Corset") == "Corset"
+
+
+def test_fit_names_respect_blender_63_byte_limit():
+    # 日本語の長い名前(3バイト/文字)でも全名前が63バイト以内に収まる
+    long_name = "コルセット_ドレス用_きつめ調整済み_最終版"
+    names = fit_names(long_name)
+    for value in names.values():
+        assert len(value.encode("utf-8")) <= 63
+
+
+def test_fit_name_token_long_names_deterministic_and_distinct():
+    long_a = "コ" * 30 + "A"
+    long_b = "コ" * 30 + "B"
+    assert fit_name_token(long_a) == fit_name_token(long_a)
+    # 切り詰め部分が同じでもハッシュで区別される
+    assert fit_name_token(long_a) != fit_name_token(long_b)
 
 
 # --- modifier_insert_index ---
