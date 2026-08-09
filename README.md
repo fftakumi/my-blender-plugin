@@ -10,8 +10,16 @@ my_blender_plugin/
 ├── blender_manifest.toml   # Blender 4.2+ Extension 用マニフェスト
 ├── operators.py            # オペレーター定義
 └── panels.py               # UIパネル定義
+tests/                      # pytest テスト(フェイク bpy で Blender なしで実行可能)
 scripts/
 └── build.sh                # 配布用 zip を作るスクリプト
+```
+
+## テスト
+
+```sh
+pip install pytest        # 初回のみ
+python3 -m pytest tests/ -v
 ```
 
 サンプルとして以下が入っています。

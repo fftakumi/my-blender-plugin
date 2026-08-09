@@ -1,6 +1,16 @@
 import bpy
 
 
+def grid_positions(count, spacing):
+    """count x count のグリッド配置座標(原点中心)のリストを返す純粋関数"""
+    offset = (count - 1) * spacing / 2
+    return [
+        (x * spacing - offset, y * spacing - offset, 0.0)
+        for x in range(count)
+        for y in range(count)
+    ]
+
+
 class MYPLUGIN_OT_hello(bpy.types.Operator):
     """動作確認用のサンプルオペレーター"""
 
@@ -37,16 +47,8 @@ class MYPLUGIN_OT_add_cube_grid(bpy.types.Operator):
     )
 
     def execute(self, context):
-        offset = (self.count - 1) * self.spacing / 2
-        for x in range(self.count):
-            for y in range(self.count):
-                bpy.ops.mesh.primitive_cube_add(
-                    location=(
-                        x * self.spacing - offset,
-                        y * self.spacing - offset,
-                        0.0,
-                    )
-                )
+        for location in grid_positions(self.count, self.spacing):
+            bpy.ops.mesh.primitive_cube_add(location=location)
         return {"FINISHED"}
 
 

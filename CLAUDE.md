@@ -20,6 +20,9 @@ my_blender_plugin/          # アドオン本体(このディレクトリをzip�
 ├── blender_manifest.toml   # Blender 4.2+ Extension 用マニフェスト
 ├── operators.py            # オペレーター定義
 └── panels.py               # UIパネル定義(3Dビューポートのサイドバー「My Plugin」タブ)
+tests/
+├── conftest.py             # フェイク bpy の注入(Blenderなしでテストを可能にする)
+└── test_*.py               # pytest テスト
 scripts/build.sh            # 配布用 zip を dist/ に生成
 ```
 
@@ -35,12 +38,30 @@ scripts/build.sh            # 配布用 zip を dist/ に生成
 - オペレーターには `bl_description`(ツールチップ)を必ず付け、`bl_options = {"REGISTER", "UNDO"}` を基本とする
 - UI表示文字列・コメントは日本語でよい
 
+## テスト(必須)
+
+**機能を実装したら、必ずテストも実装すること。テストのないコードはコミットしない。**
+
+この環境にBlender(`bpy`)はないため、テストしやすい構造にすることが前提になる。
+
+- 座標計算・名前生成などのロジックは `bpy` に依存しない純粋関数として切り出し、オペレーターの `execute()` はその関数を呼ぶ薄いラッパーにする
+- 純粋関数は pytest で直接テストする
+- `bpy` に依存する部分をテストする場合は、`sys.modules["bpy"]` にフェイクモジュールを注入してからimportする(conftest.py で行う)
+- テストは `tests/` ディレクトリに置き、`tests/test_<モジュール名>.py` という命名にする
+- 既存の例: `operators.py` の `grid_positions()`(純粋関数)と `tests/test_operators.py`
+- 実行方法(pytest がなければ `pip install pytest`):
+
+```sh
+python3 -m pytest tests/ -v
+```
+
 ## 検証
 
-このリポジトリの実行環境にBlenderはない。最低限以下を行うこと。
+このリポジトリの実行環境にBlenderはない。コミット前に最低限以下を行うこと。
 
 ```sh
 python3 -m py_compile my_blender_plugin/*.py   # 構文チェック
+python3 -m pytest tests/ -v                     # テスト
 ./scripts/build.sh                              # zip 生成確認(dist/ はコミットしない)
 ```
 
