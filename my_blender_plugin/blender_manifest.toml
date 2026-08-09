@@ -1,0 +1,18 @@
+# Blender 4.2 以降の Extension 用マニフェスト
+# https://docs.blender.org/manual/en/latest/advanced/extensions/getting_started.html
+schema_version = "1.0.0"
+
+id = "my_blender_plugin"
+version = "0.1.0"
+name = "My Blender Plugin"
+tagline = "Personal Blender add-on"
+maintainer = "fftakumi"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+tags = ["3D View"]
