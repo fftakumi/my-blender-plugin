@@ -90,15 +90,22 @@ def test_resolve_active_must_be_selected():
 # --- proximity_distances ---
 
 
-def test_proximity_distances_inverted_range():
-    assert proximity_distances(0.05) == (0.05, 0.0)
+def test_proximity_distances_saturates_up_to_fit_distance():
+    # max_dist(=フィット距離)以下は weight 1.0 に飽和し、はみ出した頂点も全力で押し込まれる
+    assert proximity_distances(0.03, 0.03) == (0.06, 0.03)
 
 
-def test_proximity_distances_rejects_zero_and_negative():
+def test_proximity_distances_zero_falloff_is_allowed():
+    assert proximity_distances(0.05, 0.0) == (0.05, 0.05)
+
+
+def test_proximity_distances_rejects_invalid_values():
     with pytest.raises(ValueError):
-        proximity_distances(0.0)
+        proximity_distances(0.0, 0.03)
     with pytest.raises(ValueError):
-        proximity_distances(-0.01)
+        proximity_distances(-0.01, 0.03)
+    with pytest.raises(ValueError):
+        proximity_distances(0.03, -0.01)
 
 
 # --- fit_names ---
