@@ -32,14 +32,19 @@ def resolve_body_and_corset(selected, active_name):
     return body_name, active_name, None
 
 
-def proximity_distances(falloff):
-    """減衰距離から VertexWeightProximity の (min_dist, max_dist) を返す純粋関数
+def proximity_distances(fit_distance, falloff):
+    """フィット距離と減衰幅から VertexWeightProximity の (min_dist, max_dist) を返す純粋関数
 
-    min > max の逆転指定にすることで「コルセットに近いほどウェイトが大きい」になる。
+    はみ出した頂点はコルセット表面から「はみ出しの深さ」ぶん離れているため、
+    距離0でだけウェイト1にすると深いはみ出しほど押し込まれなくなる。
+    max_dist(=フィット距離)以下でウェイトを1.0に飽和させ、そこから falloff ぶん
+    離れたところで0になるようにする。min > max の逆転指定で「近いほど強い」。
     """
-    if falloff <= 0:
-        raise ValueError("falloff は正の値で指定してください")
-    return (falloff, 0.0)
+    if fit_distance <= 0:
+        raise ValueError("fit_distance は正の値で指定してください")
+    if falloff < 0:
+        raise ValueError("falloff は 0 以上で指定してください")
+    return (fit_distance + falloff, fit_distance)
 
 
 def fit_names(corset_name):
@@ -122,11 +127,18 @@ class MYPLUGIN_OT_fit_body_to_corset(bpy.types.Operator):
     )
     bl_options = {"REGISTER", "UNDO"}
 
-    falloff: bpy.props.FloatProperty(
-        name="減衰距離",
-        description="コルセットからこの距離まで変形の影響をなだらかに減衰させる",
-        default=0.02,
+    fit_distance: bpy.props.FloatProperty(
+        name="フィット距離",
+        description="コルセットからこの距離以内の頂点は全力(ウェイト1.0)で押し込む。はみ出しの最大の深さより大きくすること",
+        default=0.03,
         min=0.0001,
+        subtype="DISTANCE",
+    )
+    falloff: bpy.props.FloatProperty(
+        name="減衰幅",
+        description="フィット距離の外側で、変形の影響がなだらかに消えるまでの追加距離",
+        default=0.03,
+        min=0.0,
         subtype="DISTANCE",
     )
     offset: bpy.props.FloatProperty(
@@ -185,7 +197,7 @@ class MYPLUGIN_OT_fit_body_to_corset(bpy.types.Operator):
         insert_at = modifier_insert_index([m.type for m in body.modifiers])
         stack_len_before = len(body.modifiers)
 
-        min_dist, max_dist = proximity_distances(self.falloff)
+        min_dist, max_dist = proximity_distances(self.fit_distance, self.falloff)
         vwp = body.modifiers.new(names["vwp"], "VERTEX_WEIGHT_PROXIMITY")
         vwp.vertex_group = vertex_group.name
         vwp.target = corset
