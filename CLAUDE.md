@@ -23,8 +23,22 @@ my_blender_plugin/          # アドオン本体(このディレクトリをzip�
 tests/
 ├── conftest.py             # フェイク bpy の注入(Blenderなしでテストを可能にする)
 └── test_*.py               # pytest テスト
-scripts/build.sh            # 配布用 zip を dist/ に生成
+scripts/
+├── build.sh                # 配布用 zip を dist/ に生成(Extension形式 + 従来形式)
+└── generate_index.py       # Extension リモートリポジトリ用 index.json を生成
+.github/workflows/
+└── publish-extension.yml   # push ごとに zip + index.json を GitHub Pages へ公開
 ```
+
+## 配布(リモートリポジトリ)
+
+push すると GitHub Actions が Extension zip と index.json をビルドして GitHub Pages に公開する。
+ユーザー(自分)は Blender に `https://fftakumi.github.io/my-blender-plugin/index.json` を
+リモートリポジトリとして登録してインストール・更新する。
+
+- 機能追加・修正を配信するときは `blender_manifest.toml` の `version` と
+  `__init__.py` の `bl_info["version"]` を両方上げてから push する(上げ忘れるとBlender側で更新検知されない)
+- index.json の生成ロジックは `scripts/generate_index.py`(テストは `tests/test_generate_index.py`)
 
 従来のアドオン形式(Blender 3.0+、`bl_info`)とExtension形式(Blender 4.2+、`blender_manifest.toml`)の両対応を維持すること。
 

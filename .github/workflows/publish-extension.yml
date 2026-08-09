@@ -1,0 +1,56 @@
+# push のたびに Extension zip と index.json をビルドして GitHub Pages に公開する。
+# Blender には https://fftakumi.github.io/my-blender-plugin/index.json を
+# リモートリポジトリとして登録する。
+name: Publish Blender Extension
+
+on:
+  push:
+    branches:
+      - claude/blender-plugin-setup-17gowz
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: |
+          pip install pytest
+          python3 -m pytest tests/ -v
+
+      - name: Build extension zip
+        run: ./scripts/build.sh
+
+      - name: Generate index.json
+        run: |
+          ZIP=$(ls dist/my_blender_plugin-*.zip)
+          python3 scripts/generate_index.py "$ZIP" dist/index.json
+          cat dist/index.json
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

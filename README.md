@@ -30,14 +30,32 @@ python3 -m pytest tests/ -v
 
 ## インストール
 
-### zip からインストール
+### 方法1: リモートリポジトリとして登録(Blender 4.2 以降・推奨)
+
+GitHub Actions が push のたびに Extension リポジトリ(zip + index.json)をビルドして GitHub Pages に公開しています。
+BlenderにURLを一度登録すれば、以後は Blender の UI から インストール/アップデート できます。
+
+1. `Edit > Preferences > Get Extensions` を開く
+2. 右上の `Repositories` ドロップダウン > `+` > `Add Remote Repository...`
+3. URL に以下を入力して追加:
+
+   ```
+   https://fftakumi.github.io/my-blender-plugin/index.json
+   ```
+
+4. 拡張機能一覧に `My Blender Plugin` が出るので `Install` を押す
+
+更新を配信したいときは、`blender_manifest.toml` と `__init__.py` の `bl_info` のバージョンを上げて push するだけです。
+Blender 側では `Repositories > Check for Updates` で新バージョンが表示されます。
+
+### 方法2: zip からインストール
 
 ```sh
-./scripts/build.sh   # dist/my_blender_plugin.zip ができる
+./scripts/build.sh
 ```
 
-- **Blender 4.2 以降**: `Edit > Preferences > Get Extensions > 右上の▼ > Install from Disk...` で zip を選択
-- **従来のアドオンとして**: `Edit > Preferences > Add-ons > Install...` で zip を選択し、チェックを入れて有効化
+- **Blender 4.2 以降**: `Get Extensions > 右上の▼ > Install from Disk...` で `dist/my_blender_plugin-<version>.zip` を選択
+- **従来のアドオンとして (Blender 3.x)**: `Edit > Preferences > Add-ons > Install...` で `dist/my_blender_plugin-legacy.zip` を選択し、チェックを入れて有効化
 
 ### 開発中はシンボリックリンクが楽
 
