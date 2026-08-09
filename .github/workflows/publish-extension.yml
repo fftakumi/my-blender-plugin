@@ -6,7 +6,7 @@ name: Publish Blender Extension
 on:
   push:
     branches:
-      - claude/blender-plugin-setup-17gowz
+      - main
   workflow_dispatch:
 
 permissions:
