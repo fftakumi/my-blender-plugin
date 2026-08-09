@@ -9,7 +9,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION=$(python3 -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('my_blender_plugin/blender_manifest.toml').read_text())['version'])")
+# tomllib.load はバイナリで読むので、日本語を含むマニフェストでも
+# ロケール既定のエンコーディング(Windows 日本語環境では cp932)に左右されない
+VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('my_blender_plugin/blender_manifest.toml','rb'))['version'])")
 
 rm -rf dist
 mkdir -p dist

@@ -2,12 +2,14 @@ import pytest
 
 from my_blender_plugin.operators import (
     MYPLUGIN_OT_fit_body_to_corset,
+    bounding_dimensions,
+    coverage_weight,
     fit_name_token,
     fit_names,
     grid_positions,
     modifier_insert_index,
-    proximity_distances,
     resolve_body_and_corset,
+    resolve_fit_ranges,
 )
 
 
@@ -88,25 +90,83 @@ def test_resolve_active_must_be_selected():
     assert error is not None
 
 
-# --- proximity_distances ---
+# --- bounding_dimensions ---
 
 
-def test_proximity_distances_saturates_up_to_fit_distance():
-    # max_dist(=フィット距離)以下は weight 1.0 に飽和し、はみ出した頂点も全力で押し込まれる
-    assert proximity_distances(0.03, 0.03) == (0.06, 0.03)
+def test_bounding_dimensions_basic():
+    points = [(0.0, 0.0, 0.0), (2.0, 5.0, 1.0), (-1.0, 1.0, 3.0)]
+    assert bounding_dimensions(points) == (3.0, 5.0, 3.0)
 
 
-def test_proximity_distances_zero_falloff_is_allowed():
-    assert proximity_distances(0.05, 0.0) == (0.05, 0.05)
+def test_bounding_dimensions_single_point_is_zero_sized():
+    assert bounding_dimensions([(1.0, 2.0, 3.0)]) == (0.0, 0.0, 0.0)
 
 
-def test_proximity_distances_rejects_invalid_values():
+def test_bounding_dimensions_rejects_empty():
     with pytest.raises(ValueError):
-        proximity_distances(0.0, 0.03)
+        bounding_dimensions([])
+
+
+# --- resolve_fit_ranges ---
+
+
+def test_resolve_fit_ranges_keeps_explicit_values():
+    assert resolve_fit_ranges(2.5, 0.4, (10.0, 8.0, 6.0)) == (2.5, 0.4)
+
+
+def test_resolve_fit_ranges_auto_scales_with_corset_size():
+    # 0 指定はコルセットの最大辺から決める。シーンのスケールが変わっても比率は同じ
+    small = resolve_fit_ranges(0.0, 0.0, (0.2, 0.16, 0.12))
+    large = resolve_fit_ranges(0.0, 0.0, (20.0, 16.0, 12.0))
+    assert large[0] == pytest.approx(small[0] * 100)
+    assert large[1] == pytest.approx(small[1] * 100)
+    assert large[1] < large[0]
+
+
+def test_resolve_fit_ranges_auto_only_for_the_zero_side():
+    assert resolve_fit_ranges(3.0, 0.0, (20.0, 16.0, 12.0)) == (3.0, 2.0)
+    assert resolve_fit_ranges(0.0, 1.0, (20.0, 16.0, 12.0)) == (10.0, 1.0)
+
+
+def test_resolve_fit_ranges_rejects_invalid_values():
     with pytest.raises(ValueError):
-        proximity_distances(-0.01, 0.03)
+        resolve_fit_ranges(-1.0, 0.0, (10.0, 10.0, 10.0))
     with pytest.raises(ValueError):
-        proximity_distances(0.03, -0.01)
+        resolve_fit_ranges(0.0, -1.0, (10.0, 10.0, 10.0))
+    with pytest.raises(ValueError):
+        resolve_fit_ranges(0.0, 0.0, (0.0, 0.0, 0.0))
+
+
+# --- coverage_weight ---
+
+
+def test_coverage_weight_ignores_depth_within_range():
+    # 深いはみ出しでもウェイトが落ちない(これが「距離に関係なく押し込む」の要)
+    shallow = coverage_weight(0.01, 5.0, 10.0, 1.0)
+    deep = coverage_weight(9.9, 5.0, 10.0, 1.0)
+    assert shallow == 1.0
+    assert deep == 1.0
+
+
+def test_coverage_weight_drops_outside_max_range():
+    assert coverage_weight(10.0, 5.0, 10.0, 1.0) == 1.0
+    assert coverage_weight(10.001, 5.0, 10.0, 1.0) == 0.0
+
+
+def test_coverage_weight_feathers_toward_the_rim():
+    # 縁に近いほど 0 へ。裾や胸元で引きつれないようになだらかに落ちる
+    assert coverage_weight(0.5, 0.0, 10.0, 2.0) == 0.0
+    assert coverage_weight(0.5, 2.0, 10.0, 2.0) == 1.0
+    middle = coverage_weight(0.5, 1.0, 10.0, 2.0)
+    assert middle == pytest.approx(0.5)
+    quarter = coverage_weight(0.5, 0.5, 10.0, 2.0)
+    assert 0.0 < quarter < middle
+
+
+def test_coverage_weight_without_rim_band_is_binary():
+    # 閉じたコルセット(縁なし)は距離が無限大扱いになり、常に全力
+    assert coverage_weight(0.5, float("inf"), 10.0, 0.0) == 1.0
+    assert coverage_weight(0.5, 0.0, 10.0, 0.0) == 1.0
 
 
 # --- fit_names ---
