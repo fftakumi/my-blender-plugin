@@ -71,7 +71,10 @@ def build_skirt_body(part, table, scale):
                 params["pleat_duty"],
             ),
             "tapers": [
-                modulate.pleat_taper(t, params["pleat_start"]) for t in profile["t"]
+                modulate.pleat_taper(
+                    t, params["pleat_stitch_down"], params["pleat_closed"]
+                )
+                for t in profile["t"]
             ],
         },
         {
@@ -88,6 +91,10 @@ def build_skirt_body(part, table, scale):
 
     mesh = _tube(
         part["name"], profile, z_per_ring, angles, modulations, scale, part["material"]
+    )
+    # プリーツの折り線だけを「陰影を割る辺」として渡す(ドレープは割らない)
+    mesh.sharp_segments = modulate.pleat_fold_segments(
+        params["segments"], params["pleats"], params["pleat_depth"], params["pleat_duty"]
     )
 
     # 裾の周長を独立に検算できるのは、丈がヒップまで届いていてヒップに沿わせ、

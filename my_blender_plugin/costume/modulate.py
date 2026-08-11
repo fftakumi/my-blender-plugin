@@ -188,11 +188,28 @@ def pleat_offsets(segments, pleats, depth, duty):
     ]
 
 
-def pleat_taper(t, pleat_start):
-    """プリーツの開き具合。pleat_start までは 0(ウエストで畳まれている)"""
-    if pleat_start >= 1.0:
+def pleat_taper(t, stitch_down, closed):
+    """プリーツの開き具合。**上端の直下から非ゼロ**にする。
+
+    実物のプリーツスカートは、ウエストバンドから裾まで**折り目線が連続している**。
+    上部は縫い止め(実測: ウエストバンドから約9cm = 丈の 0.22)とプレスで
+    「閉じている」だけで、線は見えている。
+
+    最初の実装はここを「上部は折り目が無い」と取り違えて 0 から smoothstep で
+    立ち上げていたため、**上半分が折り目のない滑らかな筒**になり
+    プリーツスカートに見えなかった(docs/garments.md 参照)。
+
+      t = 0            … 0(上端リングだけは真円。ウエストバンドとの接合のため)
+      0 < t <= stitch_down … closed(閉じているが折り目線は出る)
+      stitch_down < t      … closed から 1.0 へ滑らかに開く
+    """
+    if t <= 0.0:
         return 0.0
-    return smoothstep((t - pleat_start) / (1.0 - pleat_start))
+    if t <= stitch_down:
+        return closed
+    if stitch_down >= 1.0:
+        return closed
+    return closed + (1.0 - closed) * smoothstep((t - stitch_down) / (1.0 - stitch_down))
 
 
 def drape_offsets(segments, folds, depth):
@@ -231,6 +248,26 @@ def combine_offsets(modulations, ring_index, segments):
         for index in range(segments):
             combined[index] += offsets[index] * taper
     return combined
+
+
+def pleat_fold_segments(segments, pleats, depth, duty):
+    """プリーツの折り目が来る分割位置を返す(陰影を割る辺の位置)。
+
+    `pleat_offsets` と同じ周期の計算から**直接**求める。オフセット列の差分に
+    しきい値を掛けて判定する方式は駄目で、ドレープ(余弦)を粗く刻んだときの
+    段差と区別できない(実際にドレープ48分割で全48本を折り目と誤検出した)。
+    折り目として陰影を割ってよいのは矩形波のプリーツだけ。
+    """
+    if pleats <= 0 or depth <= 0.0 or segments % pleats != 0:
+        return []
+    period = segments // pleats
+    if period < 2:
+        return []
+    outer_count = max(1, min(period - 1, int(round(duty * period))))
+    # 内→外 が period の先頭、外→内 が outer_count の位置
+    return [
+        index for index in range(segments) if index % period in (0, outer_count)
+    ]
 
 
 def ring_radii(base_semi_major, combined_offsets):

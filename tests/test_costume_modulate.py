@@ -175,11 +175,30 @@ def test_pleat_offsets_reject_period_of_one():
     assert "2倍以上" in str(error.value)
 
 
-def test_pleat_taper_is_closed_at_the_waist():
-    assert modulate.pleat_taper(0.0, 0.15) == 0.0
-    assert modulate.pleat_taper(0.15, 0.15) == 0.0
-    assert modulate.pleat_taper(1.0, 0.15) == pytest.approx(1.0)
-    assert 0.0 < modulate.pleat_taper(0.6, 0.15) < 1.0
+def test_pleat_taper_only_the_top_ring_is_a_plain_circle():
+    """上端リングだけ 0(ウエストバンドとの接合のため)"""
+    assert modulate.pleat_taper(0.0, 0.22, 0.35) == 0.0
+
+
+def test_pleat_taper_keeps_creases_just_below_the_waistband():
+    """実物は腰でも折り目線が見えている。上部を 0 にすると滑らかな筒になる"""
+    for t in (0.02, 0.1, 0.22):
+        assert modulate.pleat_taper(t, 0.22, 0.35) == pytest.approx(0.35)
+
+
+def test_pleat_taper_opens_fully_at_the_hem():
+    assert modulate.pleat_taper(1.0, 0.22, 0.35) == pytest.approx(1.0)
+
+
+def test_pleat_taper_increases_monotonically_below_the_stitching():
+    values = [modulate.pleat_taper(index / 20.0, 0.22, 0.35) for index in range(21)]
+    below = values[5:]  # t >= 0.25
+    assert below == sorted(below)
+    assert values[1] < values[-1]  # 腰より裾のほうが開いている
+
+
+def test_pleat_taper_with_full_stitch_down_stays_closed():
+    assert modulate.pleat_taper(0.9, 1.0, 0.35) == pytest.approx(0.35)
 
 
 # ------------------------------------------------------------------ ドレープ
@@ -249,3 +268,29 @@ def test_circle_angles():
     assert angles == pytest.approx([0.0, math.pi / 2, math.pi, 3 * math.pi / 2])
     with pytest.raises(ValueError):
         modulate.circle_angles(2)
+
+
+def test_pleat_fold_segments_marks_every_pleat_edge():
+    """48分割24山(1山2分割)なら、内→外と外→内で全48本が折り目"""
+    assert len(modulate.pleat_fold_segments(48, 24, 0.22, 0.5)) == 48
+
+
+def test_pleat_fold_segments_respects_duty():
+    # 1周期(4分割)につき「内→外」と「外→内」の2本
+    folds = modulate.pleat_fold_segments(48, 12, 0.22, 0.75)
+    assert len(folds) == 24
+    assert folds[:4] == [0, 3, 4, 7]
+
+
+def test_pleat_fold_segments_are_where_the_offsets_step():
+    """オフセット列の実際の段差位置と一致すること"""
+    offsets = modulate.pleat_offsets(48, 12, 0.22, 0.75)
+    steps = [i for i in range(48) if abs(offsets[i] - offsets[i - 1]) > 1e-9]
+    assert modulate.pleat_fold_segments(48, 12, 0.22, 0.75) == steps
+
+
+def test_pleat_fold_segments_none_without_pleats():
+    """ドレープはなだらかなので折り目として陰影を割ってはいけない"""
+    assert modulate.pleat_fold_segments(48, 0, 0.0, 0.5) == []
+    assert modulate.pleat_fold_segments(48, 24, 0.0, 0.5) == []
+    assert modulate.pleat_fold_segments(24, 24, 0.22, 0.5) == []

@@ -7,7 +7,11 @@
   "poly_budget": 3000,
   "materials": {
     "main": {
-      "base_color": [0.08, 0.1, 0.22],
+      "base_color": [
+        0.08,
+        0.1,
+        0.22
+      ],
       "roughness": 0.68,
       "sheen": 0.3
     }
@@ -35,14 +39,15 @@
         "segments": 48,
         "rings": 10,
         "flare": 1.5,
-        "flare_curve": 1.4,
+        "flare_curve": 1.05,
         "hip_hug": 1.0,
         "pleats": 24,
         "pleat_depth": 0.22,
         "pleat_duty": 0.5,
-        "pleat_start": 0.15,
         "drape_folds": 0,
-        "drape_depth": 0.0
+        "drape_depth": 0.0,
+        "pleat_stitch_down": 0.22,
+        "pleat_closed": 0.35
       }
     }
   ],

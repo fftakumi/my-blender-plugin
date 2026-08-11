@@ -15,6 +15,11 @@ DIM_TOL = 0.03
 RADIAL_OUTWARD_MIN = 0.95
 #: プリーツの周期成分の振幅が、指定した折り込み深さの何割以上あれば「入っている」と見るか
 PLEAT_AMPLITUDE_FRACTION = 0.3
+#: 上から2本目のリングの折り目の振幅が、裾の振幅の何割以上あれば
+#: 「折り目がウエストまで続いている」と見るか。
+#: 実物のプリーツスカートは腰でも折り目線が見えている(閉じているだけ)。
+#: docs/garments.md のプリーツスカートの定義 #1 に対応する。
+PLEAT_TOP_CREASE_MIN_RATIO = 0.15
 #: プリーツ無しのときに許す周期成分の振幅(楕円断面を多角形で近似したときの高調波ぶん)
 PLEAT_AMPLITUDE_NOISE = 0.01
 #: 参照実測(VRM 10体)の Bottoms の中央エッジ長 / 身長。warn 判定に使う
@@ -345,6 +350,27 @@ def cross_intersections(mesh_a, mesh_b, cell, eps, skip_a=(), skip_b=()):
 # ------------------------------------------------------------------ リングの寸法
 
 
+def loft_ring_indices(ring_size, ring_count, index):
+    """ロフトの index 番目のリングの頂点インデックス。
+
+    kernels.loft_rings はリングを上から順に ring_size 個ずつ並べるので、
+    上端・下端以外のリングもこれで取り出せる(折り目が途中で消えていないかを見るのに使う)。
+    """
+    if not 0 <= index < ring_count:
+        raise IndexError("リング番号が範囲外です: %d (0..%d)" % (index, ring_count - 1))
+    return list(range(index * ring_size, (index + 1) * ring_size))
+
+
+def pleat_amplitude_at_ring(mesh, index):
+    """指定リングでの「楕円ぶんを除いた」最大周期成分の振幅。
+
+    折り目がウエストから裾まで続いているかを、リングごとに測るために使う。
+    """
+    metrics = ring_metrics(mesh.verts, loft_ring_indices(mesh.ring_size, mesh.ring_count, index))
+    depth_ratio = metrics["depth"] / metrics["breadth"] if metrics["breadth"] > 0 else 1.0
+    return dominant_pleat_frequency(metrics["_radii"], depth_ratio)
+
+
 def ring_metrics(verts, ring_indices):
     """境界リングの重心・平均半径・フィット周長・実周長"""
     points = [verts[index] for index in ring_indices]
@@ -587,6 +613,24 @@ def part_report(mesh, height_units):
                 pleat_amplitude < PLEAT_AMPLITUDE_NOISE,
                 (pleat_frequency, pleat_amplitude),
                 "< %.4f" % PLEAT_AMPLITUDE_NOISE,
+            )
+    # 折り目がウエストバンドの直下から裾まで続いているか(docs/garments.md 定義 #1・#2)。
+    # 「腰では畳まれている」を「腰では折り目が無い」と実装すると上半分が滑らかな筒になり、
+    # 数値も目視も通らないのにプリーツスカートに見えない、という状態になる。
+    if design.get("pleats") and mesh.ring_count >= 3:
+        top_frequency, top_amplitude = pleat_amplitude_at_ring(mesh, 1)
+        report["pleat_amplitude_below_band"] = top_amplitude
+        report["pleat_frequency_below_band"] = top_frequency
+        if pleat_amplitude > 0.0:
+            ratio = top_amplitude / pleat_amplitude
+            report["pleat_crease_ratio"] = ratio
+            hard["pleat_crease_reaches_top"] = _check(
+                ratio >= PLEAT_TOP_CREASE_MIN_RATIO,
+                ratio,
+                ">= %.2f" % PLEAT_TOP_CREASE_MIN_RATIO,
+            )
+            hard["pleat_opens_downward"] = _check(
+                pleat_amplitude > top_amplitude, (top_amplitude, pleat_amplitude), "裾 > 腰"
             )
     # プリーツを指定したなら、裾の布が設計上の周長より確かに長くなっていること。
     # 増える量は深さと duty と断面の形に依存して閉じた式にならないので、

@@ -108,6 +108,17 @@ def material_report(obj):
     }
 
 
+def crease_report(obj, part_mesh):
+    """折り目としてシャープにした辺の本数。
+
+    プリーツはスムーズシェーディングだけだと浅い折り目がぼやけて
+    「プレスした折り目」に見えない。辺がシャープになっているかを数値で確かめる。
+    """
+    sharp = sum(1 for edge in obj.data.edges if edge.use_edge_sharp)
+    expected = len(part_mesh.sharp_segments) * max(part_mesh.ring_count - 1, 0)
+    return {"sharp_edges": sharp, "expected": expected, "fold_segments": len(part_mesh.sharp_segments)}
+
+
 def object_geometry(obj):
     """オブジェクトのメッシュをワールド座標の (頂点, 面) で取り出す"""
     matrix = obj.matrix_world
@@ -305,6 +316,7 @@ def main():
             "evaluated": validate.raw_mesh_report(
                 obj.name, *(lambda g: (g["verts"], g["faces"]))(build.evaluated_part_mesh(obj))
             ),
+            "creases": crease_report(obj, part_mesh),
             "modifiers": [(modifier.name, modifier.type) for modifier in obj.modifiers],
         }
         layer2[part_mesh.name] = entry
@@ -331,6 +343,12 @@ def main():
         )
         hard["%s.evaluated_mesh" % prefix] = _ok(
             entry["evaluated"]["failed"] == [], entry["evaluated"]["failed"], []
+        )
+        creases = entry["creases"]
+        hard["%s.pleat_creases_sharp" % prefix] = _ok(
+            creases["sharp_edges"] == creases["expected"],
+            creases["sharp_edges"],
+            creases["expected"],
         )
 
     report["layer2"] = layer2

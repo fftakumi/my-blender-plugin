@@ -33,6 +33,9 @@ class PartMesh:
     #: 設計値(検証がこれと実測を突き合わせる)。単位はシーンの unit
     design: dict = field(default_factory=dict)
     material: str = "main"
+    #: 折り目として陰影を割るべき分割位置(プリーツの折り線)。
+    #: スムーズシェーディングだけだと浅い折り目がぼやけて「プレスした折り目」に見えない
+    sharp_segments: list = field(default_factory=list)
 
     def edge_kinds(self):
         """辺を用途で分類して {("ring"|"axial"): [(a, b), ...]} を返す。
