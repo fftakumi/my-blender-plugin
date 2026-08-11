@@ -156,10 +156,20 @@ PART_SCHEMAS = {
     "buttons": _BUTTONS,
 }
 
+#: 依存パーツの取り付け先(type → 取り付け先パーツの type)。
+#: 依存パーツは相手の**実物**(境界ループや前面プロファイル)から作るので、
+#: spec に attach_to が必須になる。json_schema_hint の説明文もここから生成する
+#: (対応表を手書きで二重に持たない)
+ATTACH_TARGETS = {
+    "sleeve": "bodice",
+    "collar": "bodice",
+    "collar_fall": "collar",
+    "placket": "bodice",
+    "buttons": "placket",
+}
+
 #: 他のパーツの**実物**から作るパーツ。spec に attach_to が必須
-DEPENDENT_PART_TYPES = frozenset(
-    ("sleeve", "collar", "collar_fall", "placket", "buttons")
-)
+DEPENDENT_PART_TYPES = frozenset(ATTACH_TARGETS)
 
 #: joints で指定できる境界リングの名前
 JOINT_RING_NAMES = frozenset(("top", "bottom", "armhole_l", "armhole_r"))
@@ -540,29 +550,66 @@ def spec_hash(spec):
 
 
 def json_schema_hint():
-    """AI に渡す用のスキーマ説明を組み立てる(プロンプトに埋める)"""
+    """AI に渡す用のスキーマ説明を組み立てる(プロンプトに埋める)。
+
+    説明はハードコードせず ATTACH_TARGETS / JOINT_RING_NAMES / JOINT_KINDS /
+    PART_SCHEMAS から生成する。定数側にパーツを足せばここも追従する
+    (プロンプトと validator がずれると、AI の正しい出力が検証で全滅する)。
+    """
+    ring_names = "|".join(sorted(JOINT_RING_NAMES))
+    kind_names = "|".join(sorted(JOINT_KINDS))
     lines = [
         "衣装 spec は以下の JSON です。数値は assumed_height に対する比率です。",
         '{"schema": %d, "name": "<英数字の名前>",' % SCHEMA_VERSION,
-        ' "assumed_height": <身長 m>, "ease": <ゆとり比>, "meters_per_unit": 1.0,',
+        ' "assumed_height": <身長 m。説明文に身長の指定が無ければキーごと省略>,',
+        ' "ease": <ゆとり比>, "meters_per_unit": 1.0, "poly_budget": <面数の上限>,',
         ' "materials": {"<キー>": {%s}},'
         % ", ".join(
             '"%s": <%s>' % (field, schema[0].__name__) for field, schema in _MATERIAL_SCHEMA.items()
         ),
         ' "parts": [{"type": "<種別>", "name": "<オブジェクト名>",'
-        ' "material": "<materialsのキー>", "params": {...}}],',
-        ' "joints": [{"a": "<パーツ名>", "a_ring": "top|bottom",'
-        ' "b": "<パーツ名>", "b_ring": "top|bottom"}]}',
+        ' "material": "<materialsのキー>", "params": {...},'
+        ' "attach_to": "<取り付け先パーツの name。依存パーツのみ>"}],',
+        ' "joints": [{"a": "<パーツ名>", "a_ring": "%s",' % ring_names,
+        '            "b": "<パーツ名>", "b_ring": "%s", "kind": "%s"}]}' % (ring_names, kind_names),
+        "",
+        "attach_to のルール(依存パーツは相手の実物から作るので必須):",
+    ]
+    for part_type in sorted(ATTACH_TARGETS):
+        lines.append(
+            "  %s は attach_to に %s パーツの name を指定する"
+            % (part_type, ATTACH_TARGETS[part_type])
+        )
+    lines.append(
+        "  それ以外のパーツ(%s)は attach_to を書いてはいけない"
+        % ", ".join(sorted(set(PART_SCHEMAS) - DEPENDENT_PART_TYPES))
+    )
+    lines += [
+        "",
+        "joints のルール:",
+        '  kind "shared" は頂点を共有する接合。両パーツを同じ segments で作ること'
+        "(例: waistband の bottom と skirt_body の top)",
+        '  kind "sewn" は縫い合わせ。分割数が違ってよい'
+        "(例: bodice の armhole_l / armhole_r に sleeve の top を縫う)",
+        "  a_ring / b_ring に使えるのは %s。" % ring_names
+        + "armhole_l / armhole_r を持つのは bodice だけ",
         "",
         "type ごとに使える params(型・既定値・最小・最大):",
     ]
     for part_type, schema in sorted(PART_SCHEMAS.items()):
         lines.append("  %s:" % part_type)
         for field, (expected, default, low, high) in schema.items():
-            lines.append(
-                "    %s: %s 既定 %s 範囲 %s〜%s"
-                % (field, expected.__name__, default, low, high)
-            )
-    lines.append("")
-    lines.append("上記以外のキーを入れてはいけません。JSON 以外の文字を出力してはいけません。")
+            allowed = _ENUM_FIELDS.get(field)
+            if allowed:
+                lines.append("    %s: %s のいずれか 既定 %s" % (field, "|".join(allowed), default))
+            else:
+                lines.append(
+                    "    %s: %s 既定 %s 範囲 %s〜%s"
+                    % (field, expected.__name__, default, low, high)
+                )
+    lines += [
+        "",
+        "sizing キーは書いてはいけません(省略すればサイズ表の既定が使われます)。",
+        "spec に上記以外のキーを入れてはいけません。",
+    ]
     return "\n".join(lines)
