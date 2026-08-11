@@ -181,6 +181,83 @@ def build_waistband(part, table, scale):
     return mesh
 
 
+def build_cape(part, table, scale):
+    """ケープ。首まわりから肩の上を通って裾へ広がる、前の開いたシート。
+
+    定義は docs/garments.md。bodice の builder は使わない — bodice は design に
+    shoulder_width 等を入れるのでブラウス固有のゲート(シャツテール・胸のふくらみ・
+    製品着丈)が発火する。ケープはケープの design キーだけを申告する。
+
+    リングは水平のまま(前下がりは入れない)。上端の弧長は「首回り×(1+ゆとり)の
+    周長から前開きの楔ぶんを除いた長さ」= 製図の値として design に入れ、実測と
+    突き合わせる。断面は体と同じ厚み比の楕円で一定(肩に掛かる布なので)。
+    """
+    params = part["params"]
+    height = table["height"]
+    length = params["length"] * height
+    neck_z = params["neck_z"] * height
+    flare = params["flare"]
+    gap_angle = math.radians(params["front_open_degrees"])
+
+    neck_perimeter = table["neck"] * (1.0 + params["neck_ease"])
+    angles = _front_open_angles(params["segments"], gap_angle)
+    depth_ratio = table["depth_ratio"]
+    # 上端の弧長の製図値。楕円は弧長が角度に比例しない(前面の弧が濃い)ので
+    # 「周長×角度割合」ではなく楕円弧を数値的に積む。前開きの楔は前中心の周り
+    top_semi = modulate.ellipse_semi_major(neck_perimeter, depth_ratio)
+    top_arc = modulate.ellipse_arc(
+        top_semi,
+        depth_ratio,
+        FRONT_ANGLE + gap_angle * 0.5,
+        FRONT_ANGLE + 2.0 * math.pi - gap_angle * 0.5,
+    )
+
+    ring_points = []
+    hem_semi = None
+    for t in modulate.axis_fractions(params["rings"]):
+        perimeter = neck_perimeter * modulate.flare_multiplier(
+            t, flare, params["flare_curve"]
+        )
+        semi = modulate.ellipse_semi_major(perimeter, depth_ratio)
+        hem_semi = semi
+        ring_points.append(
+            kernels.ring_from_polar(
+                [semi * scale] * params["segments"],
+                angles,
+                (neck_z - t * length) * scale,
+                depth_ratio=depth_ratio,
+            )
+        )
+
+    mesh = kernels.loft_rings(ring_points, name=part["name"], closed=False, tubular=True)
+    mesh.material = part["material"]
+    mesh.design = {
+        # 開いた弧なので閉ループ用の周長検算は使わない(cape_* の弧長で見る)
+        "top_perimeter": None,
+        "bottom_perimeter": None,
+        "bottom_fit_perimeter": None,
+        "bottom_perimeter_note": "前が開いた弧なので cape_top_arc / cape_flare で検算する",
+        "top_z": neck_z * scale,
+        "bottom_z": (neck_z - length) * scale,
+        "length": length * scale,
+        "depth_ratio_top": depth_ratio,
+        "depth_ratio_bottom": depth_ratio,
+        "radial_modulations": [],
+        "pleats": 0,
+        "pleat_depth": 0.0,
+        # 前が開いたシート = 外周が1本の輪
+        "boundary_loops": 1,
+        "boundary_verts": None,
+        # ---- ケープ固有(validate 側のゲートが発火する)----
+        "cape_top_arc": top_arc * scale,
+        "cape_flare": flare,
+        # 裾の開き幅(前開き端点間の距離)。端点は前中心 ±gap/2 にあるので
+        # x 成分が支配的で、弦長 ≈ 2·半径·sin(gap/2)
+        "cape_hem_gap": 2.0 * hem_semi * math.sin(gap_angle * 0.5) * scale,
+    }
+    return mesh
+
+
 # ------------------------------------------------------------------ ブラウス
 #
 # 定義は docs/garments.md。要点だけ:
@@ -1000,6 +1077,7 @@ def build_buttons(part, table, scale, host=None):
 BUILDERS = {
     "skirt_body": build_skirt_body,
     "waistband": build_waistband,
+    "cape": build_cape,
     "bodice": build_bodice,
     "sleeve": build_sleeve,
     "collar": build_collar,

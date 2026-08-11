@@ -54,6 +54,21 @@ _WAISTBAND = {
     "flare": (float, 1.0, 0.5, 2.0),  # 上端に対する下端のフィット周長比
 }
 
+#: ケープ。首まわりから肩の上を通って裾へ広がる、前の開いたシート
+#: (定義は docs/garments.md)。数値はすべて設計値
+_CAPE = {
+    "neck_z": (float, 0.82, 0.5, 1.2),  # 首まわりの高さ /H(bodice の shoulder_z と同じ)
+    "length": (float, 0.30, 0.05, 0.9),  # 首から裾までの丈 /H
+    "segments": (int, 28, 4, 256),
+    "rings": (int, 12, 2, 64),
+    # 首回りに掛けるゆとり。肩の上に布が乗るので襟ぐり(0.12)より大きめ
+    "neck_ease": (float, 0.35, 0.0, 2.0),
+    "flare": (float, 2.0, 1.0, 6.0),  # 裾の弧長 / 上端の弧長
+    "flare_curve": (float, 1.2, 0.2, 4.0),
+    # 前開きの楔の角度(度)。ケープは羽織りものなので前立てより広い
+    "front_open_degrees": (float, 40.0, 2.0, 270.0),
+}
+
 #: ブラウスの胴。前が開いた筒に袖ぐりの穴を2つ開ける(定義は docs/garments.md)
 _BODICE = {
     "shoulder_z": (float, 0.82, 0.3, 1.0),  # 肩の高さ /H
@@ -148,6 +163,7 @@ _BUTTONS = {
 PART_SCHEMAS = {
     "skirt_body": _SKIRT_BODY,
     "waistband": _WAISTBAND,
+    "cape": _CAPE,
     "bodice": _BODICE,
     "sleeve": _SLEEVE,
     "collar": _COLLAR,

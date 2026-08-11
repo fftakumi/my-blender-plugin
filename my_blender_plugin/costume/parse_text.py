@@ -101,6 +101,7 @@ GARMENT_PRESETS = {
     "skirt": "skirt_flare",
     "blouse": "blouse",
     "vest": "vest",
+    "cape": "cape",
 }
 
 #: 衣装の種類の見出し語。値は GARMENT_PRESETS のキー。
@@ -111,6 +112,7 @@ GARMENT_WORDS = {
     "シャツ": "blouse", "shirt": "blouse",
     "ワイシャツ": "blouse", "トップス": "blouse",
     "ベスト": "vest", "vest": "vest", "ジレ": "vest",
+    "ケープ": "cape", "cape": "cape", "マント": "cape", "ポンチョ": "cape",
 }
 
 #: 「24本プリーツ」「プリーツ32」などから山数を拾う

@@ -46,6 +46,29 @@ def ellipse_semi_major(perimeter, depth_ratio):
     return perimeter / ellipse_perimeter(1.0, depth_ratio)
 
 
+def ellipse_arc(semi_major, depth_ratio, start_angle, end_angle, steps=512):
+    """楕円弧の長さ(kernels.ring_from_polar と同じパラメータ化: x=r·cosθ, y=r·sinθ·b)。
+
+    楕円は弧長が角度に比例しない(前後に潰れた断面では前面の弧が濃い)ので、
+    「周長 × 角度の割合」の近似は前開きの楔が大きくなるほどずれる
+    (実測: 開き40°・厚み比0.68 で 2.3%)。細分した折れ線で数値的に積む。
+    """
+    if end_angle < start_angle:
+        raise ValueError("end_angle は start_angle 以上にしてください")
+    length = 0.0
+    previous = None
+    for index in range(steps + 1):
+        angle = start_angle + (end_angle - start_angle) * index / steps
+        point = (
+            semi_major * math.cos(angle),
+            semi_major * math.sin(angle) * depth_ratio,
+        )
+        if previous is not None:
+            length += math.hypot(point[0] - previous[0], point[1] - previous[1])
+        previous = point
+    return length
+
+
 def depth_ratio_profile(ts, waist_depth_ratio, flare, flare_curve):
     """リングごとの厚み比(前後 / 左右)。
 

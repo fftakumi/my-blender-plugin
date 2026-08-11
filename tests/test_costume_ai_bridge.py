@@ -106,7 +106,7 @@ def test_request_spec_normalises_the_ai_output():
 
 
 def test_request_spec_rejects_an_invalid_ai_spec():
-    bad = json.dumps({"schema": 1, "name": "x", "parts": [{"type": "cape"}]})
+    bad = json.dumps({"schema": 1, "name": "x", "parts": [{"type": "jetpack"}]})
     with pytest.raises(ai_bridge.AIBridgeError) as error:
         ai_bridge.request_spec("なにか", runner=lambda prompt: bad)
     assert "検証に落ち" in str(error.value)

@@ -62,6 +62,13 @@ CUFF_GATHER_MIN = 1.10
 #: これを下回ると楕円断面だけの胴(= メンズシャツ)と区別できない
 BUST_PROJECTION_MIN = 0.015
 
+# ---- ケープの「形」の定義(docs/garments.md)のしきい値 ----
+#: 裾の弧長 / 上端の弧長 の下限。これ未満は肩から広がっておらず、
+#: ただの開いた筒(=ケープではない)。**設計値**
+CAPE_MIN_FLARE = 1.3
+#: 裾の開き幅の許容差(比)。寸法ではなく「前が開いている」ことの確認なので広め
+CAPE_GAP_TOL = 0.10
+
 
 # ------------------------------------------------------------------ 小物
 
@@ -537,6 +544,27 @@ def dominant_pleat_frequency(radii, depth_ratio=1.0, min_frequency=3):
     return (best, spectrum[best])
 
 
+def open_arc_length(verts, ring_indices):
+    """開いたリング(弧)の実長。ring_metrics と違い最初と最後を繋がない"""
+    points = [verts[index] for index in ring_indices]
+    return sum(_distance(points[index], points[index - 1]) for index in range(1, len(points)))
+
+
+def cape_metrics(mesh):
+    """ケープの実測(メッシュだけから出す。生成側の申告は使わない)"""
+    top = mesh.rings.get("top") or []
+    bottom = mesh.rings.get("bottom") or []
+    top_arc = open_arc_length(mesh.verts, top)
+    hem_arc = open_arc_length(mesh.verts, bottom)
+    hem_gap = _distance(mesh.verts[bottom[0]], mesh.verts[bottom[-1]]) if bottom else 0.0
+    return {
+        "measured_top_arc": top_arc,
+        "measured_hem_arc": hem_arc,
+        "measured_hem_gap": hem_gap,
+        "measured_cape_flare": (hem_arc / top_arc) if top_arc > 0.0 else 0.0,
+    }
+
+
 # ------------------------------------------------------------------ パーツ1枚の検査
 
 
@@ -688,6 +716,26 @@ def part_report(mesh, height_units):
                 (pleat_frequency, pleat_amplitude),
                 "< %.4f" % PLEAT_AMPLITUDE_NOISE,
             )
+    # ---- ケープの定義(docs/garments.md)を検証項目にしたもの ----
+    if design.get("cape_top_arc"):
+        report.update(cape_metrics(mesh))
+        # 上端の弧長 = 首回り×(1+ゆとり)から前開きの楔を除いた製図値
+        hard["cape_top_arc"] = _within(
+            report["measured_top_arc"], design["cape_top_arc"], DIM_TOL
+        )
+        # 肩から裾へ広がっていること(下限は定義、値は spec との一致)
+        hard["cape_flares_from_the_shoulder"] = _check(
+            report["measured_cape_flare"] >= CAPE_MIN_FLARE,
+            report["measured_cape_flare"],
+            ">= %.2f" % CAPE_MIN_FLARE,
+        )
+        hard["cape_flare_matches_spec"] = _within(
+            report["measured_cape_flare"], design["cape_flare"], DIM_TOL
+        )
+        # 前が開いていること(裾の開き幅が設計どおり)
+        hard["cape_front_open"] = _within(
+            report["measured_hem_gap"], design["cape_hem_gap"], CAPE_GAP_TOL
+        )
     # ---- ブラウスの定義(docs/garments.md)を検証項目にしたもの ----
     if design.get("shoulder_width"):
         report.update(bodice_metrics(mesh, design))
