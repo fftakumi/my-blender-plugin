@@ -25,6 +25,7 @@ _MODULE_NAMES = (
     "parse_text",
     "ai_bridge",
     "materials",
+    "image_input",
     "build",
 )
 

@@ -118,6 +118,37 @@ def _find_words(text, table):
     return hits
 
 
+#: 狙うエッジ長 / 身長。実測 Bottoms の 0.0206-0.0311 の中央
+TARGET_EDGE_OVER_H = 0.0258
+
+
+def _fix_density(spec, body, notes):
+    """丈と広がりに合わせて分割数を決める。
+
+    丈を変えても分割数が固定だと密度が実測レンジから外れる(実測: 既定10リングのまま
+    「ロング」(0.48H)にすると軸方向のエッジが伸びてレンジ外になった)。
+    軸方向は丈から、周方向は上端と裾の周長の平均から、狙いのエッジ長になる数を出す。
+    """
+    params = body["params"]
+    length = params.get("length", 0.27)
+    flare = params.get("flare", 1.0)
+
+    rings = max(2, round(length / TARGET_EDGE_OVER_H) + 1)
+    # 上端(ウエスト)と裾の周長の平均で周方向を決める。H 比なのでスケール非依存
+    waist_over_h = 0.39 * (1.0 + spec.get("ease", 0.03))
+    hem_over_h = 0.58 * (1.0 + spec.get("ease", 0.03)) * flare
+    segments = max(8, round((waist_over_h + hem_over_h) / 2.0 / TARGET_EDGE_OVER_H))
+
+    if rings != params.get("rings") or segments != params.get("segments"):
+        notes.append(
+            "丈 %.2fH / フレア %.2f に合わせて分割を リング %s→%d・周方向 %s→%d にした"
+            % (length, flare, params.get("rings"), rings, params.get("segments"), segments)
+        )
+    params["rings"] = rings
+    params["segments"] = segments
+    _fix_segments(spec, body, notes)
+
+
 def _fix_segments(spec, body, notes):
     """変調の山数を表現できる分割数へ引き上げ、ウエストバンドと揃える。
 
@@ -213,6 +244,10 @@ def parse(text, base_preset="skirt_flare"):
     if fabrics:
         matched["fabric"] = fabrics
         spec["materials"]["main"].update(FABRIC_WORDS[fabrics[0]])
+
+    # 丈やフレアが決まったあとに分割数を決める(順序が逆だと密度が合わない)
+    if body is not None:
+        _fix_density(spec, body, notes)
 
     # 種類が分からなければ何も作れない。
     # **形の情報(シルエット・丈)を色や素材より重く見る。** 色だけ当たっても

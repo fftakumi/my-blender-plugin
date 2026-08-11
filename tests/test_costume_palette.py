@@ -76,6 +76,25 @@ def test_drop_extremes_removes_the_white_background():
     assert kept[0]["color"][2] > kept[0]["color"][0]  # 青が残る
 
 
+def test_drop_extremes_catches_a_slightly_off_white_background():
+    """median cut が白い領域を割ると箱の平均が 0.949 のように少し下がる。
+    厳しすぎる閾値だとそこを通り抜けて背景が主色になる(実機で発生した)"""
+    pixels = [(0.95, 0.95, 0.95)] * 200 + [(0.35, 0.02, 0.06)] * 60
+    kept = palette.dominant_colors(pixels, count=1, drop_extremes=True)
+    assert kept[0]["color"][0] > kept[0]["color"][1]  # 深紅が残る
+    assert kept[0]["color"][0] < 0.5
+
+
+def test_background_like_classification():
+    assert palette.is_background_like((0.95, 0.95, 0.95))
+    assert palette.is_background_like((0.949, 0.949, 0.949))
+    assert palette.is_background_like((0.0, 0.0, 0.0))
+    assert not palette.is_background_like((0.35, 0.02, 0.06))  # 深紅
+    assert not palette.is_background_like((0.75, 0.55, 0.10))  # 金
+    # 明るくても彩度が高ければ服の色として残す
+    assert not palette.is_background_like((0.95, 0.60, 0.70))
+
+
 def test_drop_extremes_keeps_a_genuinely_white_garment():
     """真っ白しか無い画像で全部落として空を返さないこと"""
     kept = palette.dominant_colors([(1.0, 1.0, 1.0)] * 40, count=2, drop_extremes=True)
@@ -96,6 +115,46 @@ def test_to_material_params_gives_grey_less_sheen_than_a_saturated_colour():
     vivid = palette.to_material_params([{"color": (0.9, 0.05, 0.05), "weight": 1.0}])
     assert grey["main"]["sheen"] < vivid["main"]["sheen"]
     assert grey["main"]["roughness"] > vivid["main"]["roughness"]
+
+
+def test_apply_to_spec_overrides_colour_but_keeps_the_fabric_feel():
+    """画像から分かるのは色だけ。サテン指定の艶を画像で上書きしてはいけない"""
+    spec = {"materials": {"main": {"roughness": 0.24, "sheen": 0.45, "alpha": 0.9}}}
+    notes = palette.apply_to_spec(spec, [{"color": (0.3, 0.05, 0.08), "weight": 1.0}])
+    main = spec["materials"]["main"]
+    assert main["base_color"] == pytest.approx([0.3, 0.05, 0.08])
+    assert main["roughness"] == pytest.approx(0.24)
+    assert main["sheen"] == pytest.approx(0.45)
+    assert main["alpha"] == pytest.approx(0.9)
+    assert notes
+
+
+def test_apply_to_spec_adds_leftover_colours_as_accents():
+    spec = {"materials": {"main": {}}}
+    colors = [
+        {"color": (0.3, 0.0, 0.0), "weight": 0.6},
+        {"color": (0.0, 0.3, 0.0), "weight": 0.3},
+        {"color": (0.0, 0.0, 0.3), "weight": 0.1},
+    ]
+    palette.apply_to_spec(spec, colors)
+    assert spec["materials"]["main"]["base_color"] == pytest.approx([0.3, 0.0, 0.0])
+    assert "accent1" in spec["materials"]
+    assert "accent2" in spec["materials"]
+
+
+def test_apply_to_spec_with_no_colours_changes_nothing():
+    spec = {"materials": {"main": {"roughness": 0.5}}}
+    assert palette.apply_to_spec(spec, []) == []
+    assert spec["materials"]["main"] == {"roughness": 0.5}
+
+
+def test_apply_to_spec_result_passes_validation():
+    from my_blender_plugin.costume import spec as spec_module
+
+    spec = spec_module.default_spec()
+    palette.apply_to_spec(spec, [{"color": (0.12, 0.03, 0.05), "weight": 1.0}])
+    normalized = spec_module.normalize_spec(spec)
+    assert normalized["materials"]["main"]["base_color"] == pytest.approx([0.12, 0.03, 0.05])
 
 
 def test_material_params_pass_spec_validation():

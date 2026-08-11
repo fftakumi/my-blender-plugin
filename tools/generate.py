@@ -24,6 +24,13 @@ if _REPO not in sys.path:
 from my_blender_plugin.costume import build, spec as spec_module, validate  # noqa: E402
 
 
+def _refuse_ai(_prompt):
+    """--ai を付けていないときは AI 経路を確実に失敗させる(黙って外部プロセスを起動しない)"""
+    from my_blender_plugin.costume import ai_bridge
+
+    raise ai_bridge.AIBridgeError("--ai が指定されていません")
+
+
 def clear_scene():
     """--factory-startup の既定オブジェクト(立方体・カメラ・ライト)を消す"""
     for obj in list(bpy.data.objects):
@@ -37,18 +44,43 @@ def parse_args(argv=None):
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--preset", help="同梱プリセット名")
     group.add_argument("--spec", help="spec JSON のパス")
+    group.add_argument("--text", help="衣装の説明文(キーワード辞書で spec を組む)")
     parser.add_argument("--out", required=True, help="保存先の .blend")
     parser.add_argument("--report", help="層1レポート JSON の書き出し先")
+    parser.add_argument("--image", help="参考画像。色だけを spec のマテリアルに反映する")
+    parser.add_argument("--image-colors", type=int, default=3, help="画像から取る色数")
+    parser.add_argument(
+        "--ai",
+        action="store_true",
+        help="説明文がキーワードで解けないときに claude -p に spec を作らせる",
+    )
     return parser.parse_args(argv)
 
 
 def main():
     args = parse_args()
-    normalized = (
-        spec_module.load_preset(args.preset)
-        if args.preset
-        else spec_module.load_spec_file(args.spec)
-    )
+    if args.preset:
+        raw = spec_module.load_preset(args.preset)
+    elif args.spec:
+        raw = spec_module.load_spec_file(args.spec)
+    else:
+        from my_blender_plugin.costume import ai_bridge
+
+        outcome = ai_bridge.spec_from_text(
+            args.text, runner=None if args.ai else _refuse_ai
+        )
+        raw = outcome["spec"]
+        print("SPEC_SOURCE %s" % outcome["source"])
+        if outcome["ai_error"]:
+            print("AI_ERROR %s" % outcome["ai_error"])
+
+    if args.image:
+        from my_blender_plugin.costume import image_input
+
+        for note in image_input.apply_image(raw, args.image, count=args.image_colors):
+            print("IMAGE %s" % note)
+
+    normalized = spec_module.normalize_spec(raw)
 
     clear_scene()
     result = build.build_costume(normalized)

@@ -111,6 +111,33 @@ def test_parse_rejects_non_string():
         parse_text.parse(None)
 
 
+# ---------------------------------------- 丈に応じた分割数
+
+
+def test_longer_skirt_gets_more_rings():
+    short = body_of(parse_text.parse("ミニスカート")["spec"])
+    long_ = body_of(parse_text.parse("マキシスカート")["spec"])
+    assert long_["params"]["rings"] > short["params"]["rings"]
+
+
+def test_wider_flare_gets_more_segments():
+    narrow = body_of(parse_text.parse("タイトスカート")["spec"])
+    wide = body_of(parse_text.parse("サーキュラースカート")["spec"])
+    assert wide["params"]["segments"] > narrow["params"]["segments"]
+
+
+@pytest.mark.parametrize(
+    "text", ["超ミニスカート", "ミニスカート", "ひざ丈スカート", "ロングスカート", "マキシスカート"]
+)
+def test_density_stays_in_the_measured_range_at_every_length(text):
+    """丈を変えても分割数が固定だと密度がレンジ外に出る。丈から決めていること"""
+    normalized = spec_module.normalize_spec(parse_text.parse(text)["spec"])
+    report = validate.costume_report(parts.build_all(normalized), normalized)
+    low, high = validate.EDGE_LENGTH_OVER_H_RANGE
+    assert low <= report["edge_length_over_h"] <= high, report["edge_length_over_h"]
+    assert report["failed"] == []
+
+
 # ---------------------------------------- 解析結果がそのまま生成に通ること
 
 

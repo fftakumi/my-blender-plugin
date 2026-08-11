@@ -120,21 +120,64 @@ def _saturation(color):
     return 0.0 if high <= 0.0 else (high - low) / high
 
 
-def dominant_colors(pixels, count=4, drop_extremes=False):
-    """代表色を返す。drop_extremes で真っ白・真っ黒に近い色を落とす。
+#: これより明るくて彩度が低い色は「白抜き背景」とみなす。
+#: 0.95 のような厳しい値だと駄目 — median cut が白い領域を細かく割るので、
+#: 箱の平均が 0.949 のように**わずかに下回って通り抜ける**(実機で背景の白が主色になった)。
+BACKGROUND_LUMINANCE = 0.80
+BACKGROUND_SATURATION = 0.10
+#: これより暗い色は「黒背景・影」とみなす
+FOREGROUND_MIN_LUMINANCE = 0.02
 
-    背景が白抜きの資料画像から服の色を拾うときに drop_extremes=True が効く。
-    ただし白い服・黒い服も落ちるので既定は False。
+
+def is_background_like(color):
+    """白抜き背景・黒背景として捨てる候補かどうか"""
+    luminance = _luminance(color)
+    if luminance < FOREGROUND_MIN_LUMINANCE:
+        return True
+    return luminance > BACKGROUND_LUMINANCE and _saturation(color) < BACKGROUND_SATURATION
+
+
+def dominant_colors(pixels, count=4, drop_extremes=False):
+    """代表色を返す。drop_extremes で白抜き背景・黒背景に近い色を落とす。
+
+    資料画像は白抜き背景が多く、そのままでは背景が主色になる。
+    **全部が背景色と判定された場合は落とさない**(本当に白い服・黒い服のとき)。
     """
     colors = median_cut(pixels, count * 2 if drop_extremes else count)
     if drop_extremes:
-        kept = [
-            item
-            for item in colors
-            if 0.03 < _luminance(item["color"]) < 0.95 or _saturation(item["color"]) > 0.15
-        ]
-        colors = (kept or colors)[:count]
+        kept = [item for item in colors if not is_background_like(item["color"])]
+        colors = kept or colors
     return colors[:count]
+
+
+def apply_to_spec(spec, colors):
+    """代表色を spec のマテリアルに載せる。**色だけ**を上書きする(純粋関数)。
+
+    roughness / sheen / alpha は説明文から決まった値(サテン・デニムなど)を残す。
+    画像から分かるのは色で、生地の質感ではないため。
+    余った色は accent として足す(パーツから参照はしないが手直しの材料になる)。
+    """
+    if not colors:
+        return []
+    materials = spec.setdefault("materials", {})
+    if not materials:
+        materials["main"] = {}
+    keys = sorted(materials)
+
+    for index, key in enumerate(keys):
+        color = colors[min(index, len(colors) - 1)]["color"]
+        materials.setdefault(key, {})
+        materials[key]["base_color"] = [round(channel, 6) for channel in color]
+
+    if len(colors) > len(keys):
+        extra = to_material_params(colors[len(keys) :])
+        for offset, params in enumerate(extra.values(), start=1):
+            materials["accent%d" % offset] = params
+
+    return [
+        "画像から %d 色を取り、%s の色に反映した(質感は説明文の指定を残した)"
+        % (len(colors), ", ".join(keys))
+    ]
 
 
 def to_material_params(colors, alpha=1.0):

@@ -534,6 +534,22 @@ class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
     preset: bpy.props.EnumProperty(
         name="プリセット", description="同梱の spec", items=lambda self, context: _preset_items()
     )
+    image_path: bpy.props.StringProperty(
+        name="参考画像",
+        description=(
+            "指定すると画像から色を取ってマテリアルに反映する(空なら説明文の色を使う)。"
+            "取るのは色だけで、形は説明文/プリセットが決める"
+        ),
+        default="",
+        subtype="FILE_PATH",
+    )
+    image_colors: bpy.props.IntProperty(
+        name="画像から取る色数",
+        description="1色目を主色にし、残りは accent マテリアルとして足す",
+        default=3,
+        min=1,
+        max=8,
+    )
     use_ai: bpy.props.BoolProperty(
         name="キーワードで解けなければAIに頼る",
         description=(
@@ -559,10 +575,18 @@ class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
     def poll(cls, context):
         return context.mode == "OBJECT"
 
+    def invoke(self, context, event):
+        # シーンの単位設定から埋める。1unit=1cm のシーン(scale_length 0.01)で
+        # 既定の 1.0 のまま押すと身長1.53"cm"の衣装ができて見つからなくなる
+        scale = getattr(context.scene.unit_settings, "scale_length", 1.0)
+        if scale:
+            self.meters_per_unit = scale
+        return context.window_manager.invoke_props_dialog(self, width=420)
+
     def execute(self, context):
-        # build は bmesh / bpy.data を使うので、フェイク bpy のテスト環境で
+        # build / image_input は bmesh / bpy.data を使うので、フェイク bpy のテスト環境で
         # import されないようここで遅延 import する(_coverage_weights と同じ理由)
-        from .costume import build as costume_build
+        from .costume import build as costume_build, image_input
 
         try:
             if self.source == "PRESET":
@@ -579,10 +603,16 @@ class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
                     self.report({"INFO"}, note)
                 if result["ai_error"]:
                     self.report({"WARNING"}, "AI に頼れませんでした: %s" % result["ai_error"])
+            if self.image_path.strip():
+                for note in image_input.apply_image(
+                    spec, self.image_path, count=self.image_colors
+                ):
+                    self.report({"INFO"}, note)
+                origin += " + 画像の色"
             spec["meters_per_unit"] = self.meters_per_unit
             spec["assumed_height"] = self.assumed_height
             spec = costume_spec.normalize_spec(spec)
-        except (costume_spec.SpecError, ValueError) as error:
+        except (costume_spec.SpecError, image_input.ImageInputError, ValueError) as error:
             self.report({"ERROR"}, "spec を組み立てられませんでした: %s" % error)
             return {"CANCELLED"}
 

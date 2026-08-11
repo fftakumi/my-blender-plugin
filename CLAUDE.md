@@ -144,6 +144,9 @@ Blender 実機での確認(生成 → 検証 + レンダー6枚):
 - **AI は入力の解釈だけ。** 既定は `parse_text.py` のキーワード辞書(AI 呼び出しゼロ)。
   形の手がかりが見つからなかったときだけ `ai_bridge.py` → `claude -p` に spec JSON を作らせ、
   **必ず `spec.normalize_spec()` を通してから使う**。落ちたら捨てて辞書の結果で続行する。
-  画像の色は `palette.py`(median cut・決定的)で抽出して AI に投げない
+  画像の色は `palette.py`(median cut・決定的)で抽出して AI に投げない。
+  画像から取るのは**色だけ**で、質感(roughness/sheen)は説明文の指定を残す。
+  bpy 側の読み込み・縮小は `image_input.py`、spec への載せ方は `palette.apply_to_spec`(純粋関数)。
+  **画像から形を読む経路はまだ無い**(AI 前提なので次のイテレーション)
 - 数値の根拠は character-modeling スキルの実測値(VRM 10体)。**測っていない値を実測として書かない**。
   設計値なら設計値と明記する(`sizing.py` の冒頭が例)
