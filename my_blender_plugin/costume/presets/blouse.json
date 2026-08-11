@@ -100,9 +100,9 @@
       "material": "main",
       "attach_to": "Blouse_Collar",
       "params": {
-        "height_ratio": 0.03,
-        "rings": 3,
-        "flare": 1.34
+        "height_ratio": 0.033,
+        "rings": 4,
+        "flare": 1.5
       }
     },
     {
