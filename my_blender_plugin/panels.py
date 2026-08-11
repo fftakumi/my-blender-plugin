@@ -22,6 +22,11 @@ class MYPLUGIN_PT_main(bpy.types.Panel):
             operators.MYPLUGIN_OT_fit_body_to_corset.bl_idname, icon="MOD_SHRINKWRAP"
         )
 
+        layout.separator()
+        box = layout.box()
+        box.label(text="衣装生成", icon="MATCLOTH")
+        box.operator(operators.MYPLUGIN_OT_generate_costume.bl_idname, icon="OUTLINER_OB_SURFACE")
+
 
 _classes = (MYPLUGIN_PT_main,)
 

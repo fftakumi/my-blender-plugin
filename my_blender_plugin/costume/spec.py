@@ -160,6 +160,41 @@ def _normalize_table(raw, schema, where, errors):
     }
 
 
+def _modulation_errors(part, where):
+    """周方向の変調が分割数で表現できるかを確かめる。
+
+    分割数が足りないと**折り返し(エイリアシング)**が起きて、頼んだ山数とは違う
+    数の波が出る(実測: 32分割で 20山を頼むと 12山に化けた)。黙って別の形を作るより
+    エラーにする。
+    """
+    params = part.get("params") or {}
+    segments = params.get("segments")
+    if not segments:
+        return []
+
+    errors = []
+    pleats = params.get("pleats") or 0
+    if pleats:
+        if segments % pleats != 0:
+            errors.append(
+                "%s: segments(%d) は pleats(%d) の倍数にしてください"
+                "(折り目が周方向にずれます)" % (where, segments, pleats)
+            )
+        if segments < pleats * 2:
+            errors.append(
+                "%s: プリーツ %d 山には segments が %d 以上必要です(現在 %d)。"
+                "1山に外側の面と折り込みの2分割が要ります"
+                % (where, pleats, pleats * 2, segments)
+            )
+    folds = params.get("drape_folds") or 0
+    if folds and segments < folds * 2:
+        errors.append(
+            "%s: ドレープ %d 山には segments が %d 以上必要です(現在 %d)。"
+            "足りないと折り返して別の山数になります" % (where, folds, folds * 2, segments)
+        )
+    return errors
+
+
 def normalize_spec(spec):
     """spec を既定値で埋め、型と範囲を検証した新しい dict を返す。
 
@@ -250,6 +285,9 @@ def normalize_spec(spec):
 
     if not result["parts"]:
         raise SpecError("有効なパーツが1つもありません: " + " / ".join(errors))
+
+    for index, part in enumerate(result["parts"]):
+        errors.extend(_modulation_errors(part, "parts[%d]" % index))
 
     result["joints"] = []
     for index, joint in enumerate(spec.get("joints") or []):

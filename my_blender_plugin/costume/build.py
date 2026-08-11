@@ -31,10 +31,18 @@ def ensure_collection(name, scene=None):
     return collection
 
 
-def _remove_existing(name):
-    """同名オブジェクトとそのメッシュを消す(再生成で .001 が増えるのを防ぐ)"""
+def _remove_existing(name, collection=None):
+    """同名オブジェクトを消す(同じ衣装を作り直したときに .001 が増えるのを防ぐ)。
+
+    **消すのは同じコレクションに居るものだけ。** パーツ名は spec が決めるので
+    別の衣装でも "Skirt_Body" が衝突しうる。無条件に消すと、違う衣装を作った瞬間に
+    前の衣装が消えてしまう(実機で確認)。別コレクションのものは Blender の
+    自動連番(.001)に任せる。
+    """
     existing = bpy.data.objects.get(name)
     if existing is None:
+        return
+    if collection is not None and existing.name not in collection.objects:
         return
     mesh = existing.data if existing.type == "MESH" else None
     bpy.data.objects.remove(existing, do_unlink=True)
@@ -44,7 +52,7 @@ def _remove_existing(name):
 
 def part_to_object(part_mesh, material=None, collection=None):
     """PartMesh 1枚から Blender オブジェクトを作る"""
-    _remove_existing(part_mesh.name)
+    _remove_existing(part_mesh.name, collection)
 
     mesh = bpy.data.meshes.new(part_mesh.name)
     mesh.from_pydata([list(point) for point in part_mesh.verts], [], [list(q) for q in part_mesh.quads])

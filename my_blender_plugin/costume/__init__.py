@@ -6,8 +6,11 @@
 ImportError で落ちる。bpy依存モジュールは呼ぶ側が使う直前に import すること。
 
 - bpy 非依存(pytest から直接テストできる): spec, sizing, modulate, kernels, validate,
-  parts, paths, parse_text, palette, ai_bridge
+  parts, parse_text, palette, ai_bridge
 - bpy 依存(Blender の中だけ): build, materials
+
+モジュールを増やしたら `_MODULE_NAMES` にも足すこと(tests/test_addon.py が
+ディレクトリの中身と突き合わせて検査する)。
 """
 
 # 依存の浅い順。importlib.reload はサブモジュールを辿らないので自分で並べる。
@@ -17,7 +20,6 @@ _MODULE_NAMES = (
     "modulate",
     "kernels",
     "validate",
-    "paths",
     "parts",
     "palette",
     "parse_text",
