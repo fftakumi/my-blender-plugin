@@ -842,22 +842,50 @@ def build_buttons(part, table, scale, host=None):
     segments = max(6, params["segments"])
     angles = modulate.circle_angles(segments)
 
+    # シャツのボタンは**厚みのある平たい円盤**(実物 直径11.5mm / 厚み2.3mm / 4つ穴)。
+    # 前の版は迫り出す円錐で、裏面も穴も無く真珠のスタッドに見えていた(定義 #15)。
+    #
+    #   リング0: 裏面の縁     半径 r、前立てに接する側
+    #   リング1: 表面の縁     半径 r、厚みぶん前   ← 0→1 が円盤の側面
+    #   リング2: 縁の内側     半径 0.82r、同じ高さ ← 立った縁
+    #   リング3: 皿          半径 0.42r、少し奥   ← ここの4点を奥へ押して穴の窪みに
+    #   リング4: 中心        半径 0.10r、皿と同じ高さ
+    thickness = radius * 2.0 * params["thickness_ratio"]
+    dished = 1.0 - params["dish"]
+    #   リング0: 裏面の縁   半径 r       前立てに接する側
+    #   リング1: 表面の縁   半径 r       厚みぶん前   ← 0→1 が円盤の側面
+    #   リング2: 縁の内側   半径 0.82r   同じ高さ     ← 立った縁
+    #   リング3: 穴の外側   半径 0.52r   少し奥(皿)
+    #   リング4: 穴の内側   半径 0.30r   同じ         ← 3→4 の面を4か所抜いて穴にする
+    #   リング5: 中心       半径 0.10r   同じ
+    profile = (
+        (1.0, 0.0),
+        (1.0, 1.0),
+        (0.82, 1.0),
+        (0.52, dished),
+        (0.30, dished),
+        (0.10, dished),
+    )
+    hole_ring = 3
+    hole_segments = modulate.button_hole_segments(segments, params["holes"])
+    skip = {(hole_ring, segment) for segment in hole_segments}
+
     verts, quads, uv_loops = [], [], []
     for z in zs:
-        # ドーム: 外周 → 中ほど(前へ) → ほぼ中心(いちばん前)
-        profile = ((1.0, 0.0), (0.62, 0.38), (0.14, 0.52))
         shell = [
             [
                 (
                     radius * factor * math.cos(angle),
-                    base_y - radius * depth,
+                    base_y - thickness * forward,
                     z + radius * factor * math.sin(angle),
                 )
                 for angle in angles
             ]
-            for factor, depth in profile
+            for factor, forward in profile
         ]
-        piece = kernels.loft_rings(shell, name=part["name"], closed=True, tubular=False)
+        piece = kernels.loft_rings(
+            shell, name=part["name"], closed=True, tubular=False, skip_faces=skip
+        )
         offset = len(verts)
         verts.extend(piece.verts)
         quads.extend(tuple(index + offset for index in quad) for quad in piece.quads)
@@ -870,9 +898,12 @@ def build_buttons(part, table, scale, host=None):
         uv_loops=uv_loops,
         rings={},
         ring_size=segments,
-        ring_count=3 * count,
+        ring_count=len(profile) * count,
         tubular=False,
         material=part["material"],
+        # ボタンは布ではなく硬い部品。スムーズシェーディングを掛けると
+        # 円盤の縁が丸まって、寄って見ると白い塊にしか見えない
+        flat_shaded=True,
     )
     mesh.design = {
         "top_perimeter": None,
@@ -887,7 +918,8 @@ def build_buttons(part, table, scale, host=None):
         "radial_modulations": [],
         "pleats": 0,
         "pleat_depth": 0.0,
-        "boundary_loops": 2 * count,  # ボタン1個につき 外周 + 中心の小穴
+        # ボタン1個につき 外周 + 中心の小穴 + 穴のぶん
+        "boundary_loops": (2 + params["holes"]) * count,
         "boundary_verts": None,
         # --- 定義 #14 ---
         "button_count": count,
@@ -896,6 +928,12 @@ def build_buttons(part, table, scale, host=None):
         "placket_width": design["placket_width"],
         "placket_top_z": design["placket_top_z"],
         "placket_bottom_z": design["placket_bottom_z"],
+        # --- 定義 #15(ボタンそのものの形) ---
+        "button_diameter": radius * 2.0,
+        "button_thickness": thickness,
+        "button_thickness_ratio": params["thickness_ratio"],
+        "button_holes": params["holes"],
+        "button_segments": segments,
     }
     return mesh
 

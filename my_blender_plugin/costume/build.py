@@ -90,9 +90,12 @@ def part_to_object(part_mesh, material=None, collection=None):
         for loop_index, uv in zip(polygon.loop_indices, loop_uvs):
             uv_layer.data[loop_index].uv = uv
 
-    # 4.1 以降は面ごとの use_smooth ではなく sharp_face 属性。Mesh.shade_smooth() が正攻法
-    if hasattr(mesh, "shade_smooth"):
-        mesh.shade_smooth()
+    # 4.1 以降は面ごとの use_smooth ではなく sharp_face 属性。
+    # Mesh.shade_smooth() / shade_flat() が正攻法。
+    # 布はスムーズ、硬い部品(ボタン)はフラット — 円盤の縁を丸めない
+    shade = "shade_flat" if part_mesh.flat_shaded else "shade_smooth"
+    if hasattr(mesh, shade):
+        getattr(mesh, shade)()
     mark_sharp_folds(mesh, part_mesh)
 
     if material is not None:

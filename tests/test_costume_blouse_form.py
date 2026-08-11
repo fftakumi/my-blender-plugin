@@ -253,6 +253,67 @@ def test_buttons_are_counted_from_the_mesh_not_from_the_declaration():
     assert entry["buttons_inside_placket"] is True
 
 
+def test_button_hole_segments_are_evenly_spaced():
+    assert modulate.button_hole_segments(12, 4) == [0, 3, 6, 9]
+    assert modulate.button_hole_segments(12, 0) == []
+
+
+def test_button_hole_segments_reject_a_count_that_cannot_be_divided():
+    with pytest.raises(ValueError):
+        modulate.button_hole_segments(10, 4)
+
+
+def test_button_is_a_flat_disc_with_four_holes():
+    """定義 #15: シャツ用貝ボタンは 直径11.5mm / 厚み2.3mm / 4つ穴。
+
+    #14 は個数・間隔・位置しか見ていなかったので、前の版の
+    「迫り出す円錐・裏面も穴も無し」が通っていた。
+    """
+    normalized, built = build_blouse()
+    entry = gates(built, normalized, "Blouse_Buttons")
+    assert entry["measured_button_diameter"] == pytest.approx(0.0115, abs=0.0005)
+    assert entry["measured_button_thickness"] == pytest.approx(0.0023, abs=0.0005)
+    assert entry["measured_button_thickness_ratio"] == pytest.approx(0.20, abs=0.02)
+    assert entry["measured_button_holes"] == 4
+    assert entry["measured_button_hole_spacing_cv"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_domed_button_fails_the_flat_disc_gate():
+    """厚み/直径が実物から外れたら落ちること(前の版の円錐は 0.26)"""
+    normalized, built = build_blouse({"Blouse_Buttons": {"thickness_ratio": 0.5}})
+    entry = gates(built, normalized, "Blouse_Buttons")
+    assert "button_is_a_flat_disc" in entry["failed"]
+
+
+def test_a_button_without_holes_fails():
+    """穴を 0 にすると「申告0 = 実測0」で通ってしまう罠。下限で止める"""
+    normalized, built = build_blouse({"Blouse_Buttons": {"holes": 0}})
+    entry = gates(built, normalized, "Blouse_Buttons")
+    assert entry["measured_button_holes"] == 0
+    assert "button_holes" in entry["failed"]
+
+
+def test_holes_are_counted_from_the_mesh_as_boundary_loops():
+    """穴は「押した頂点の数」ではなく**境界ループ**として数える。
+
+    窪みだと生成側の申告に近い量を数えることになる。面を抜いて本当に開けたので、
+    ボタン1個の境界は 外周 + 中心の小穴 + 穴4つ = 6本になる。
+    """
+    normalized, built = build_blouse()
+    buttons = part_named(built, "Blouse_Buttons")
+    entry = gates(built, normalized, "Blouse_Buttons")
+    assert buttons.design["boundary_loops"] == 6 * (2 + 4)
+    assert entry["boundary_loops"] == 6 * (2 + 4)
+    assert entry["measured_button_holes"] == 4
+
+
+def test_buttons_are_flat_shaded():
+    """硬い部品にスムーズシェーディングを掛けると円盤の縁が丸まって塊に見える"""
+    _normalized, built = build_blouse()
+    assert part_named(built, "Blouse_Buttons").flat_shaded is True
+    assert part_named(built, "Blouse_Bodice").flat_shaded is False
+
+
 def test_the_sleeve_seam_sits_exactly_on_the_armhole():
     """袖の上端リングは袖ぐりの境界ループそのものなので継ぎ目はゼロ"""
     _normalized, built = build_blouse()

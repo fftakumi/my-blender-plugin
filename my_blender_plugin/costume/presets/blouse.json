@@ -124,11 +124,14 @@
       "attach_to": "Blouse_Placket",
       "params": {
         "count": 6,
-        "radius": 0.0035,
-        "segments": 10,
-        "standoff": 0.0006,
+        "radius": 0.00364,
+        "segments": 16,
+        "standoff": 0.0004,
         "top_inset": 0.06,
-        "bottom_inset": 0.1
+        "bottom_inset": 0.1,
+        "thickness_ratio": 0.2,
+        "dish": 0.35,
+        "holes": 4
       }
     }
   ],

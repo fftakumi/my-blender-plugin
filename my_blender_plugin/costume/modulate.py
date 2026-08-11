@@ -335,6 +335,25 @@ def neckline_drop(angle, front_drop, back_drop, front_angle):
     return front_drop * max(0.0, phase) + back_drop * max(0.0, -phase)
 
 
+def button_hole_segments(segments, holes):
+    """ボタンの穴を開ける分割番号(定義 #15)。
+
+    最初は「頂点を奥へ押した窪み」にしたが、寄って見ると陰影がぼやけて
+    穴に見えなかった。**面を抜いて本当に開ける**(袖ぐりと同じ `skip_faces`)。
+    そうすると検証側も「メッシュに穴がいくつあるか」を境界ループとして数えられる。
+    窪みだと「押した頂点の数」を数えることになり、生成側の申告に近づいてしまう。
+    """
+    if holes <= 0:
+        return []
+    if segments % holes != 0:
+        raise ValueError(
+            "分割数(%d)は穴の数(%d)の倍数にしてください(等間隔に置けません)"
+            % (segments, holes)
+        )
+    period = segments // holes
+    return [index * period for index in range(holes)]
+
+
 def button_positions(top_z, bottom_z, count, top_inset, bottom_inset):
     """ボタンの高さを等間隔で返す(定義 #14)。
 

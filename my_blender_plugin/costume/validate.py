@@ -46,6 +46,13 @@ BUTTON_MIN_COUNT = 4
 BUTTON_GAP_CV_MAX = 0.15
 #: 前立ての幅 / 前開きの隙間の幅 の下限。同じ幅だと縁が合って筋が見えるので余裕を持たせる
 PLACKET_COVER_MARGIN = 1.5
+#: ボタンの 厚み / 直径。実物のシャツ用貝ボタンは 2.3mm / 11.5mm = 0.20。
+#: ここを見ていなかったので、迫り出す円錐(0.26・裏面も穴も無し)が通っていた
+BUTTON_THICKNESS_RATIO = 0.20
+#: その許容差(比)。1.5〜5mm 厚の実物があるので広めに取る
+BUTTON_THICKNESS_TOL = 0.40
+#: 穴の最少数。シャツは4つ穴が標準、2つ穴もある。0 は「ボタンではない何か」
+BUTTON_MIN_HOLES = 2
 
 
 # ------------------------------------------------------------------ 小物
@@ -783,6 +790,30 @@ def part_report(mesh, height_units):
             (report["buttons_inside_placket"], report["buttons_within_placket_z"]),
             "前立ての内側",
         )
+        # ---- 定義 #15: ボタン**そのものの形**。#14 は個数・間隔・位置しか見ていない ----
+        if design.get("button_diameter"):
+            hard["button_diameter"] = _within(
+                report["measured_button_diameter"], design["button_diameter"], 0.20
+            )
+        if report["measured_button_thickness_ratio"] is not None:
+            hard["button_is_a_flat_disc"] = _within(
+                report["measured_button_thickness_ratio"],
+                BUTTON_THICKNESS_RATIO,
+                BUTTON_THICKNESS_TOL,
+            )
+        if report["measured_button_holes"] is not None:
+            # 申告と一致するだけでは駄目。**穴が無いボタンはシャツのボタンではない**
+            # ので下限も見る(holes=0 にすると申告0と実測0が一致して通ってしまう)
+            hard["button_holes"] = _check(
+                report["measured_button_holes"] == design.get("button_holes")
+                and report["measured_button_holes"] >= BUTTON_MIN_HOLES
+                and report["measured_button_hole_spacing_cv"] <= BUTTON_GAP_CV_MAX,
+                (
+                    report["measured_button_holes"],
+                    report["measured_button_hole_spacing_cv"],
+                ),
+                "%d個以上・等間隔(申告 %s)" % (BUTTON_MIN_HOLES, design.get("button_holes")),
+            )
 
     # 折り目がウエストバンドの直下から裾まで続いているか(docs/garments.md 定義 #1・#2)。
     # 「腰では畳まれている」を「腰では折り目が無い」と実装すると上半分が滑らかな筒になり、
@@ -1073,6 +1104,56 @@ def placket_metrics(mesh, design):
     }
 
 
+def _button_shells(mesh, design, loops):
+    """ボタンの個数と、1個あたりの穴の数・穴の等間隔さを**境界ループから**数える。
+
+    最初は「奥へ押した頂点の数」を数えていたが、それは生成側の申告に近い。
+    面を抜いて本当に穴を開けたので、**穴 = 4頂点の境界ループ**として数えられる。
+
+    ボタン1個の境界は「外周(分割数)」「中心の小穴(分割数)」「穴 × holes(各4頂点)」。
+    穴は z でまとまるので、z でクラスタリングして1個ぶんに分ける。
+    """
+    segments = design.get("button_segments")
+    if not segments:
+        return None, None, None
+    big = [loop for loop in loops if len(loop) == segments]
+    small = [loop for loop in loops if len(loop) == 4]
+    count = len(big) // 2
+    if count <= 0:
+        return 0, None, None
+    if not small:
+        return count, 0, 0.0
+
+    centres = [
+        tuple(sum(mesh.verts[index][axis] for index in loop) / len(loop) for axis in range(3))
+        for loop in small
+    ]
+    # ボタンは z 方向に大きく離れている(間隔 ~10cm)。穴どうしは ~5mm
+    radius = design.get("button_radius") or 0.0
+    groups = []
+    for centre in sorted(centres, key=lambda point: -point[2]):
+        if groups and abs(groups[-1][0][2] - centre[2]) <= radius * 3.0:
+            groups[-1].append(centre)
+        else:
+            groups.append([centre])
+    per_button = len(small) / count
+
+    # 等間隔さは、いちばん上のボタンの穴の角度で見る
+    top = groups[0]
+    spread = 0.0
+    if len(top) >= 2:
+        cx = sum(point[0] for point in top) / len(top)
+        cz = sum(point[2] for point in top) / len(top)
+        order = sorted(math.atan2(point[2] - cz, point[0] - cx) for point in top)
+        gaps = [order[index] - order[index - 1] for index in range(1, len(order))]
+        gaps.append(order[0] + 2.0 * math.pi - order[-1])
+        mean = sum(gaps) / len(gaps)
+        if mean > 0:
+            variance = sum((gap - mean) ** 2 for gap in gaps) / len(gaps)
+            spread = math.sqrt(variance) / mean
+    return count, per_button, spread
+
+
 def button_metrics(mesh, design):
     """ボタン列について定義 #14 を測る。
 
@@ -1089,11 +1170,23 @@ def button_metrics(mesh, design):
         variance = sum((gap - mean_gap) ** 2 for gap in gaps) / len(gaps)
         spread = math.sqrt(variance) / mean_gap
     xs = [point[0] for point in mesh.verts]
+    ys = [point[1] for point in mesh.verts]
     half = design.get("placket_width", 0.0) / 2.0
+
+    # 定義 #15: ボタン**そのものの形**。個数・間隔・位置は形を1つも測っていない。
+    # 直径は x の差し渡し(ボタンは x 中心に揃っている)、厚みは y の差し渡し
+    diameter = (max(xs) - min(xs)) if xs else 0.0
+    thickness = (max(ys) - min(ys)) if ys else 0.0
+    count, holes, hole_spread = _button_shells(mesh, design, loops)
     return {
-        "measured_button_count": len(loops) // 2,
+        "measured_button_count": count,
         "measured_button_gap_cv": spread,
         "measured_button_gap": mean_gap,
+        "measured_button_diameter": diameter,
+        "measured_button_thickness": thickness,
+        "measured_button_thickness_ratio": (thickness / diameter) if diameter else None,
+        "measured_button_holes": holes,
+        "measured_button_hole_spacing_cv": hole_spread,
         "buttons_inside_placket": (
             bool(xs) and half > 0 and max(xs) <= half and min(xs) >= -half
         ),
@@ -1163,12 +1256,29 @@ def costume_report(built, normalized_spec):
     total_faces = sum(len(mesh.quads) for mesh in meshes)
     total_verts = sum(len(mesh.verts) for mesh in meshes)
 
-    # 実測の「エッジ長 / 身長 0.0206-0.0311」は**衣装1着ぶんの平均**の値なので、
-    # 全パーツの辺をプールして測る。接合のために本体と周方向分割を共有する
+    # 実測の「エッジ長 / 身長 0.0206-0.0311」は**布のパーツ1着ぶんの平均**の値なので、
+    # 布のパーツの辺をプールして測る。接合のために本体と周方向分割を共有する
     # ウエストバンドは単体では細かく出るが、それはパーツ単体で判定すべき値ではない。
-    pooled = [length for report in parts for length in report.pop("_edge_lengths")]
+    #
+    # **硬い部品(ボタン)は別勘定。** 参照レンジは Bottoms の布メッシュの実測で、
+    # ボタンを含まない。直径11.5mmの部品を混ぜると平均を押し下げて、
+    # 布の粗さを見るという指標の意味が消える(実際 0.0199 → 0.0143 まで落ちた)
+    trim = {mesh.name for mesh in meshes if mesh.flat_shaded}
+    lengths_by_part = {report["part"]: report.pop("_edge_lengths") for report in parts}
+    pooled = [
+        length
+        for name, lengths in lengths_by_part.items()
+        if name not in trim
+        for length in lengths
+    ]
+    trim_pooled = [
+        length for name, lengths in lengths_by_part.items() if name in trim for length in lengths
+    ]
     pooled_stats = _stats(pooled)
     edge_over_h = (pooled_stats["mean"] / height_units) if height_units and pooled else None
+    trim_over_h = (
+        (_stats(trim_pooled)["mean"] / height_units) if height_units and trim_pooled else None
+    )
 
     hard = {
         "poly_budget": _check(
@@ -1211,6 +1321,9 @@ def costume_report(built, normalized_spec):
         "totals": {"verts": total_verts, "faces": total_faces},
         "edge_length": pooled_stats,
         "edge_length_over_h": edge_over_h,
+        # 硬い部品(ボタン)の内訳。布の指標とは混ぜない
+        "trim_edge_length_over_h": trim_over_h,
+        "trim_parts": sorted(trim),
         "parts": parts,
         "joints": joints,
         "part_pairs": crossings,
