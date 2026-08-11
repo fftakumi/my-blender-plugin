@@ -68,11 +68,31 @@ def extract_json(output):
     raise AIBridgeError("AI の出力から JSON を取り出せませんでした: %r" % output[:400])
 
 
-def default_runner(prompt, timeout=DEFAULT_TIMEOUT, command=None):
+#: `claude -p` に付ける制限フラグ。**JSON を書かせるだけなのでツールは全部落とす。**
+#:
+#: プロンプトには衣装の説明文がそのまま入る。ユーザーの説明文が信頼できても、
+#: 画像やファイル由来のテキストが混ざる経路がある以上、**説明文はデータであって
+#: 指示ではない**。何も付けずに起動すると、呼び出された claude は
+#: ユーザー設定で事前許可済みのツールと cwd の CLAUDE.md を引き継ぐので、
+#: 説明文経由のプロンプトインジェクションで許可済みツールが走り得る。
+#: 出力側は必ず normalize_spec() を通すが、それは**実行中の副作用**を防がない。
+SANDBOX_FLAGS = (
+    "--allowedTools",
+    "",  # 何も許可しない
+    "--permission-mode",
+    "default",  # 事前許可の bypass を継承しない
+    "--setting-sources",
+    "",  # ユーザー設定・プロジェクト設定・CLAUDE.md を読み込ませない
+)
+
+
+def default_runner(prompt, timeout=DEFAULT_TIMEOUT, command=None, flags=SANDBOX_FLAGS):
     """`claude -p` を subprocess で呼ぶ。
 
     Windows の `claude` は .cmd シムなので shutil.which で実体を解決する。
     出力の復号は cp932 に落ちないよう utf-8 を明示する。
+    引数はリストで渡すのでシェルは介在しない(インジェクションの経路にならない)。
+    ツールを落とす理由は SANDBOX_FLAGS を見ること。
     """
     executable = command or shutil.which("claude")
     if not executable:
@@ -81,7 +101,7 @@ def default_runner(prompt, timeout=DEFAULT_TIMEOUT, command=None):
         )
     try:
         completed = subprocess.run(
-            [executable, "-p", prompt],
+            [executable, *flags, "-p", prompt],
             capture_output=True,
             text=True,
             encoding="utf-8",

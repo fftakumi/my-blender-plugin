@@ -1196,54 +1196,82 @@ def placket_metrics(mesh, design):
     }
 
 
-def _button_shells(mesh, design, loops):
-    """ボタンの個数と、1個あたりの穴の数・穴の等間隔さを**境界ループから**数える。
+def _loop_centre(mesh, loop):
+    return tuple(
+        sum(mesh.verts[index][axis] for index in loop) / len(loop) for axis in range(3)
+    )
 
-    最初は「奥へ押した頂点の数」を数えていたが、それは生成側の申告に近い。
-    面を抜いて本当に穴を開けたので、**穴 = 4頂点の境界ループ**として数えられる。
+
+def _angular_spread(points, cx, cz):
+    """点を (x, z) 平面の角度順に並べたときの、間隔の変動係数"""
+    if len(points) < 2:
+        return 0.0
+    order = sorted(math.atan2(point[2] - cz, point[0] - cx) for point in points)
+    gaps = [order[index] - order[index - 1] for index in range(1, len(order))]
+    gaps.append(order[0] + 2.0 * math.pi - order[-1])
+    mean = sum(gaps) / len(gaps)
+    if mean <= 0:
+        return 0.0
+    variance = sum((gap - mean) ** 2 for gap in gaps) / len(gaps)
+    return math.sqrt(variance) / mean
+
+
+def _button_shells(mesh, design, loops):
+    """ボタンを**境界ループから**1個ずつ復元して、個数・高さ・穴を実測する。
 
     ボタン1個の境界は「外周(分割数)」「中心の小穴(分割数)」「穴 × holes(各4頂点)」。
-    穴は z でまとまるので、z でクラスタリングして1個ぶんに分ける。
+    大きい輪2本の重心 z がそのボタンの高さで、小さい輪をいちばん近いボタンに
+    割り当てれば **1個ごとの穴の数**が出る。
+
+    **高さを design["button_zs"] から取ってはいけない。** それは生成側の申告で、
+    メッシュを動かしても気づけない(実際、頂点を間隔の45%ずらしても間隔ゲートが
+    通ることを指摘で実証された)。docs/garments.md の罠表4行目と同じ形。
+
+    戻り値: (個数, 高さのリスト, 1個あたりの穴数の最小, 穴間隔CVの最大)
     """
     segments = design.get("button_segments")
-    if not segments:
-        return None, None, None
+    if not segments or segments == 4:
+        # 分割数4だと穴の輪(4頂点)と外周の輪が区別できない
+        return None, None, None, None
     big = [loop for loop in loops if len(loop) == segments]
     small = [loop for loop in loops if len(loop) == 4]
-    count = len(big) // 2
-    if count <= 0:
-        return 0, None, None
-    if not small:
-        return count, 0, 0.0
+    if not big:
+        return 0, [], None, None
 
-    centres = [
-        tuple(sum(mesh.verts[index][axis] for index in loop) / len(loop) for axis in range(3))
-        for loop in small
-    ]
-    # ボタンは z 方向に大きく離れている(間隔 ~10cm)。穴どうしは ~5mm
     radius = design.get("button_radius") or 0.0
-    groups = []
-    for centre in sorted(centres, key=lambda point: -point[2]):
-        if groups and abs(groups[-1][0][2] - centre[2]) <= radius * 3.0:
-            groups[-1].append(centre)
-        else:
-            groups.append([centre])
-    per_button = len(small) / count
+    tolerance = max(radius * 1.5, 1e-9)
 
-    # 等間隔さは、いちばん上のボタンの穴の角度で見る
-    top = groups[0]
-    spread = 0.0
-    if len(top) >= 2:
-        cx = sum(point[0] for point in top) / len(top)
-        cz = sum(point[2] for point in top) / len(top)
-        order = sorted(math.atan2(point[2] - cz, point[0] - cx) for point in top)
-        gaps = [order[index] - order[index - 1] for index in range(1, len(order))]
-        gaps.append(order[0] + 2.0 * math.pi - order[-1])
-        mean = sum(gaps) / len(gaps)
-        if mean > 0:
-            variance = sum((gap - mean) ** 2 for gap in gaps) / len(gaps)
-            spread = math.sqrt(variance) / mean
-    return count, per_button, spread
+    # 大きい輪の重心 z をボタンごとにまとめる(ボタン間は穴の数十倍離れている)
+    clusters = []
+    for centre in sorted((_loop_centre(mesh, loop) for loop in big), key=lambda p: -p[2]):
+        if clusters and abs(clusters[-1][-1][2] - centre[2]) <= tolerance:
+            clusters[-1].append(centre)
+        else:
+            clusters.append([centre])
+    heights = [sum(point[2] for point in group) / len(group) for group in clusters]
+    count = len(clusters)
+    if not small:
+        return count, heights, 0, 0.0
+
+    # 穴をいちばん近いボタンへ割り当てる。**個数の平均で見てはいけない** —
+    # 1個に8穴・別の1個に0穴でも平均4で通ってしまう
+    buckets = [[] for _ in heights]
+    for loop in small:
+        centre = _loop_centre(mesh, loop)
+        nearest = min(range(len(heights)), key=lambda i: abs(heights[i] - centre[2]))
+        buckets[nearest].append(centre)
+
+    spreads = []
+    for group, height in zip(buckets, heights):
+        if len(group) >= 2:
+            cx = sum(point[0] for point in group) / len(group)
+            spreads.append(_angular_spread(group, cx, height))
+    return (
+        count,
+        heights,
+        min(len(group) for group in buckets),
+        max(spreads) if spreads else 0.0,
+    )
 
 
 def button_metrics(mesh, design):
@@ -1254,13 +1282,6 @@ def button_metrics(mesh, design):
     """
     topo = topology(mesh.verts, mesh.quads)
     loops = boundary_loops(topo["_boundary_edges"])
-    zs = sorted(design.get("button_zs", []), reverse=True)
-    gaps = [zs[index - 1] - zs[index] for index in range(1, len(zs))]
-    mean_gap = sum(gaps) / len(gaps) if gaps else 0.0
-    spread = 0.0
-    if gaps and mean_gap > 0:
-        variance = sum((gap - mean_gap) ** 2 for gap in gaps) / len(gaps)
-        spread = math.sqrt(variance) / mean_gap
     xs = [point[0] for point in mesh.verts]
     ys = [point[1] for point in mesh.verts]
     half = design.get("placket_width", 0.0) / 2.0
@@ -1269,9 +1290,19 @@ def button_metrics(mesh, design):
     # 直径は x の差し渡し(ボタンは x 中心に揃っている)、厚みは y の差し渡し
     diameter = (max(xs) - min(xs)) if xs else 0.0
     thickness = (max(ys) - min(ys)) if ys else 0.0
-    count, holes, hole_spread = _button_shells(mesh, design, loops)
+    count, heights, holes, hole_spread = _button_shells(mesh, design, loops)
+
+    # 高さは**メッシュから**復元したものを使う(設計値の申告ではない)
+    zs = sorted(heights or [], reverse=True)
+    gaps = [zs[index - 1] - zs[index] for index in range(1, len(zs))]
+    mean_gap = sum(gaps) / len(gaps) if gaps else 0.0
+    spread = 0.0
+    if gaps and mean_gap > 0:
+        variance = sum((gap - mean_gap) ** 2 for gap in gaps) / len(gaps)
+        spread = math.sqrt(variance) / mean_gap
     return {
         "measured_button_count": count,
+        "measured_button_zs": zs,
         "measured_button_gap_cv": spread,
         "measured_button_gap": mean_gap,
         "measured_button_diameter": diameter,
@@ -1282,6 +1313,7 @@ def button_metrics(mesh, design):
         "buttons_inside_placket": (
             bool(xs) and half > 0 and max(xs) <= half and min(xs) >= -half
         ),
+        # z も**メッシュから**復元した値で見る。設計値同士の比較は原理的に落ちない
         "buttons_within_placket_z": (
             bool(zs)
             and max(zs) <= design.get("placket_top_z", float("inf"))

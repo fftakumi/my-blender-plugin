@@ -322,6 +322,28 @@ def _modulation_errors(part, where):
             "%s: ドレープ %d 山には segments が %d 以上必要です(現在 %d)。"
             "足りないと折り返して別の山数になります" % (where, folds, folds * 2, segments)
         )
+
+    # 山数と深さは**両方**指定するか、両方 0 か。片方だけだと形が出ないのに
+    # 「プリーツを頼んだ」ことになり、周波数のゲート(modulation_pleat_k)が
+    # 無言で消える。docs/garments.md の罠表2行目(設計値が 0 だとゲートごと消える)
+    # と同じ形なので、spec の段階で止める
+    for count_field, depth_field, label in (
+        ("pleats", "pleat_depth", "プリーツ"),
+        ("drape_folds", "drape_depth", "ドレープ"),
+    ):
+        count = params.get(count_field) or 0
+        depth = params.get(depth_field) or 0.0
+        if count and depth <= 0.0:
+            errors.append(
+                "%s: %s の山数(%s=%d)を指定したのに深さ(%s)が 0 です。"
+                "形が出ないうえ周波数の検証項目も消えます"
+                % (where, label, count_field, count, depth_field)
+            )
+        if depth > 0.0 and not count:
+            errors.append(
+                "%s: %s の深さ(%s=%.3f)を指定したのに山数(%s)が 0 です"
+                % (where, label, depth_field, depth, count_field)
+            )
     return errors
 
 

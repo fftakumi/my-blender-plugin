@@ -548,3 +548,84 @@ def test_the_placket_follows_the_bust_without_cutting_into_it():
     assert placket.design["placket_front_y"] < min(
         y for _z, y in bodice.design["front_profile"][-3:]
     )
+
+
+# --------------------------------- PR #7 のレビューで実証された穴の回帰テスト
+#
+# 「メッシュを動かしてもゲートが通る」= 生成側の申告を測っていた、という指摘。
+# docs/garments.md の罠表4行目とまったく同じ形を、自分でもう一度作っていた。
+
+
+def test_moving_a_button_in_the_mesh_breaks_the_spacing_gate():
+    """頂点を動かしたら落ちること。**設計値ではなくメッシュを測る**"""
+    normalized, built = build_blouse()
+    buttons = part_named(built, "Blouse_Buttons")
+    before = validate.part_report(buttons, 1.58)
+    assert before["failed"] == []
+
+    gap = before["measured_button_gap"]
+    segments = buttons.design["button_segments"]
+    shell = buttons.design["boundary_loops"] // buttons.design["button_count"]
+    # 1個ぶんのリング本数(profile の長さ)。穴を開けても頂点の並びは保たれる
+    per_button = len(buttons.verts) // buttons.design["button_count"]
+    moved = copy.deepcopy(buttons)
+    moved.verts = [
+        (point[0], point[1], point[2] - gap * 0.45) if index < per_button else point
+        for index, point in enumerate(moved.verts)
+    ]
+    after = validate.part_report(moved, 1.58)
+    assert after["measured_button_gap_cv"] > validate.BUTTON_GAP_CV_MAX
+    assert "button_spacing" in after["failed"]
+    del segments, shell
+
+
+def test_button_heights_are_recovered_from_the_mesh():
+    """高さは design["button_zs"] ではなく境界ループの重心から復元する"""
+    normalized, built = build_blouse()
+    buttons = part_named(built, "Blouse_Buttons")
+    entry = gates(built, normalized, "Blouse_Buttons")
+    measured = entry["measured_button_zs"]
+    assert len(measured) == 6
+    for actual, declared in zip(measured, sorted(buttons.design["button_zs"], reverse=True)):
+        assert actual == pytest.approx(declared, abs=1e-9)
+
+
+def test_hole_count_is_the_worst_button_not_the_average():
+    """1個に8穴・別の1個に0穴でも平均4で通る、という穴を塞ぐ"""
+    normalized, built = build_blouse()
+    buttons = part_named(built, "Blouse_Buttons")
+    entry = gates(built, normalized, "Blouse_Buttons")
+    assert entry["measured_button_holes"] == 4
+    # 穴の輪(4頂点)を1個ぶん潰すと、その1個だけ穴が減って落ちる
+    topo = validate.topology(buttons.verts, buttons.quads)
+    loops = validate.boundary_loops(topo["_boundary_edges"])
+    small = [loop for loop in loops if len(loop) == 4]
+    count, heights, holes, _spread = validate._button_shells(
+        buttons, buttons.design, [loop for loop in loops if loop is not small[0]]
+    )
+    assert holes == 3, "1個だけ穴が減ったら最小値が下がること"
+    del count, heights
+
+
+def test_pleats_without_depth_is_rejected_by_the_spec():
+    """山数だけ指定して深さ 0 だと、周波数のゲートが無言で消える"""
+    normalized = spec_module.load_preset("skirt_pleated")
+    part = next(item for item in normalized["parts"] if item["type"] == "skirt_body")
+    part["params"]["pleat_depth"] = 0.0
+    with pytest.raises(spec_module.SpecError) as error:
+        spec_module.normalize_spec(copy.deepcopy(normalized))
+    assert "深さ" in str(error.value)
+
+
+def test_depth_without_pleats_is_rejected_by_the_spec():
+    normalized = spec_module.load_preset("skirt_pleated")
+    part = next(item for item in normalized["parts"] if item["type"] == "skirt_body")
+    part["params"]["pleats"] = 0
+    with pytest.raises(spec_module.SpecError):
+        spec_module.normalize_spec(copy.deepcopy(normalized))
+
+
+def test_every_preset_still_normalizes():
+    """新しい相互チェックが同梱プリセットを壊していないこと"""
+    for name in ("skirt_a0", "skirt_flare", "skirt_pleated", "blouse"):
+        assert spec_module.load_preset(name)["name"] == name

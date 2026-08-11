@@ -1,4 +1,5 @@
 import json
+import types
 
 import pytest
 
@@ -168,3 +169,53 @@ def test_default_runner_never_reports_an_empty_reason(monkeypatch):
     with pytest.raises(ai_bridge.AIBridgeError) as error:
         ai_bridge.default_runner("prompt")
     assert "出力なし" in str(error.value)
+
+
+def test_default_runner_disables_tools_and_settings():
+    """`claude -p` に衣装の説明文がそのまま入る。**説明文はデータであって指示ではない。**
+
+    何も付けずに起動すると、呼ばれた claude はユーザー設定で事前許可済みの
+    ツールと cwd の CLAUDE.md を引き継ぐので、説明文経由のプロンプト
+    インジェクションで許可済みツールが走り得る。出力は normalize_spec() を
+    通すが、それは**実行中の副作用**を防がない。
+    """
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    original = ai_bridge.subprocess.run
+    ai_bridge.subprocess.run = fake_run
+    try:
+        ai_bridge.default_runner("説明文", command="claude")
+    finally:
+        ai_bridge.subprocess.run = original
+
+    argv = seen["argv"]
+    assert argv[0] == "claude"
+    assert "-p" in argv and argv[-1] == "説明文"
+    # ツールを一切許可しない / 事前許可を継承しない / 設定と CLAUDE.md を読まない
+    assert argv[argv.index("--allowedTools") + 1] == ""
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert argv[argv.index("--setting-sources") + 1] == ""
+
+
+def test_default_runner_passes_arguments_as_a_list():
+    """シェルを介さないのでインジェクションの経路にならない"""
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["shell"] = kwargs.get("shell", False)
+        return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    original = ai_bridge.subprocess.run
+    ai_bridge.subprocess.run = fake_run
+    try:
+        ai_bridge.default_runner("a; rm -rf /", command="claude")
+    finally:
+        ai_bridge.subprocess.run = original
+    assert isinstance(seen["argv"], list)
+    assert seen["shell"] is False
+    assert seen["argv"][-1] == "a; rm -rf /"
