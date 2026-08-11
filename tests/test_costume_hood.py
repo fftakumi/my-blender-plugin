@@ -82,16 +82,16 @@ def test_parse_reaches_the_hooded_preset():
 # ---------------------------------------- 層3a: spec を壊すとゲートが落ちる
 
 
-def test_a_flat_hood_fails_the_depth_gate():
-    """高さの無いフード(height_scale 最小)は頭が入らない → 設計値と食い違えば落ちる。
-    ここでは design と実装が同じ倍率を使うので、メッシュ側だけ潰す 3b で検証する。
-    代わりに、開口を閉じた spec が hood_face_open に落ちることを見る"""
-    normalized, built = build_hooded_cape(
-        {"Cape_Hood": {"face_open_degrees": 20.0}}
-    )
-    _report, entry = hood_entry(built, normalized)
-    # 開口 20° は頭の半径に対して弦が短く、顔が出せない
-    assert "hood_face_open" in entry["failed"] or entry["measured_hood_face_gap"] > 0
+def test_the_face_gap_floor_scales_with_the_requested_opening():
+    """開口の下限(設計弦長の半分)が spec の開口角に追従すること。
+    高さ側の 3a は design と実装が同じ倍率を共有するので作れない —
+    メッシュだけ潰す 3b(下のテスト)が高さの網"""
+    normalized, built = build_hooded_cape({"Cape_Hood": {"face_open_degrees": 200.0}})
+    _report, wide = hood_entry(built, normalized)
+    normalized, built = build_hooded_cape({"Cape_Hood": {"face_open_degrees": 60.0}})
+    _report, narrow = hood_entry(built, normalized)
+    assert wide["design"]["hood_face_gap_floor"] > narrow["design"]["hood_face_gap_floor"]
+    assert wide["failed"] == [] and narrow["failed"] == []
 
 
 # ---------------------------------------- 層3b: メッシュだけ壊すとゲートが落ちる
