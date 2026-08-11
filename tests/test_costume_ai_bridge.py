@@ -368,6 +368,28 @@ def test_explicit_height_comes_only_from_the_text():
     assert without["explicit_height"] is None
 
 
+def test_default_runner_picks_a_fast_model_by_default():
+    """spec 生成は構造化タスク。実測で既定モデル約120秒/回 → haiku 約55秒/回。
+    品質は正規化+ビルド前検証+リトライが担保するので速いモデルを既定にする"""
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    original = ai_bridge.subprocess.run
+    ai_bridge.subprocess.run = fake_run
+    try:
+        ai_bridge.default_runner("説明文", command="claude")
+        argv = seen["argv"]
+        assert argv[argv.index("--model") + 1] == ai_bridge.DEFAULT_MODEL
+        # model=None なら CLI の既定モデルに任せる
+        ai_bridge.default_runner("説明文", command="claude", model=None)
+        assert "--model" not in seen["argv"]
+    finally:
+        ai_bridge.subprocess.run = original
+
+
 def test_default_runner_passes_arguments_as_a_list():
     """シェルを介さないのでインジェクションの経路にならない"""
     seen = {}

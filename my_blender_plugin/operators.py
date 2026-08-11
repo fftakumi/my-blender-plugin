@@ -554,7 +554,7 @@ class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
         name="AIに解釈させる(claude -p)",
         description=(
             "説明文の解釈を claude -p に任せる(辞書より多様な衣装が作れる)。"
-            "応答を待つ間 UI が固まる(最大約120秒、作り直しが入ると約240秒)。"
+            "応答を待つ間 UI が固まる(実測で1分前後。作り直しが入ると2回分)。"
             "claude CLI が無い環境では待たずに辞書の結果へフォールバックする。"
             "オフにすると外部プロセスを起動せず、キーワード辞書だけで解釈する"
         ),

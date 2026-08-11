@@ -16,8 +16,14 @@ import subprocess
 
 from . import parse_text, parts as parts_module, spec as spec_module, validate as validate_module
 
-#: `claude -p` の応答を待つ上限(秒)。UI スレッドから呼ぶと固まるので必須
-DEFAULT_TIMEOUT = 120
+#: `claude -p` の応答を待つ上限(秒)。UI スレッドから呼ぶと固まるので必須。
+#: 実測(2026-08): 本番プロンプトで haiku 約55秒/回、CLI 既定モデル 約120秒/回。
+#: 120 だと既定モデルがすれすれで落ちるので余裕を持たせる
+DEFAULT_TIMEOUT = 240
+
+#: 既定で使うモデル。spec 生成は構造化タスクなので速いモデルで足りる
+#: (品質は正規化+ビルド前検証+リトライが担保する)。None なら CLI の既定モデル
+DEFAULT_MODEL = "haiku"
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
@@ -165,7 +171,7 @@ SANDBOX_FLAGS = (
 )
 
 
-def default_runner(prompt, timeout=DEFAULT_TIMEOUT, command=None, flags=SANDBOX_FLAGS):
+def default_runner(prompt, timeout=DEFAULT_TIMEOUT, command=None, flags=SANDBOX_FLAGS, model=DEFAULT_MODEL):
     """`claude -p` を subprocess で呼ぶ。
 
     Windows の `claude` は .cmd シムなので shutil.which で実体を解決する。
@@ -178,9 +184,12 @@ def default_runner(prompt, timeout=DEFAULT_TIMEOUT, command=None, flags=SANDBOX_
         raise AIBridgeError(
             "claude コマンドが見つかりません。PATH を確認するか runner を渡してください"
         )
+    argv = [executable, *flags]
+    if model:
+        argv += ["--model", model]
     try:
         completed = subprocess.run(
-            [executable, *flags, "-p", prompt],
+            [*argv, "-p", prompt],
             capture_output=True,
             text=True,
             encoding="utf-8",
