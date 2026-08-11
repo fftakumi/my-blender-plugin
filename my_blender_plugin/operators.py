@@ -551,12 +551,14 @@ class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
         max=8,
     )
     use_ai: bpy.props.BoolProperty(
-        name="キーワードで解けなければAIに頼る",
+        name="AIに解釈させる(claude -p)",
         description=(
-            "説明文がキーワード辞書で解けなかったときだけ claude -p に spec を作らせる。"
-            "外部プロセスを起動する。失敗しても辞書の結果で続行する"
+            "説明文の解釈を claude -p に任せる(辞書より多様な衣装が作れる)。"
+            "応答を待つ間 UI が固まる(最大約120秒、作り直しが入ると約240秒)。"
+            "claude CLI が無い環境では待たずに辞書の結果へフォールバックする。"
+            "オフにすると外部プロセスを起動せず、キーワード辞書だけで解釈する"
         ),
-        default=False,
+        default=True,
     )
     meters_per_unit: bpy.props.FloatProperty(
         name="1unitのメートル数",
@@ -589,6 +591,9 @@ class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
         from .costume import build as costume_build, image_input
 
         try:
+            # 身長はダイアログ値が既定。説明文に明記されていた場合だけそちらが勝つ
+            # (以前は無条件でダイアログ値が上書きし、「身長160cm」が死んでいた)
+            height = self.assumed_height
             if self.source == "PRESET":
                 spec = costume_spec.load_preset(self.preset)
                 origin = "プリセット %s" % self.preset
@@ -601,8 +606,18 @@ class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
                 origin = "説明文(%s)" % result["source"]
                 for note in result["parse"]["notes"]:
                     self.report({"INFO"}, note)
-                if result["ai_error"]:
+                for item in result["unsupported"]:
+                    self.report({"INFO"}, "AI: %s(spec からは省いた)" % item)
+                if result["fallback_warning"]:
+                    self.report({"WARNING"}, result["fallback_warning"])
+                elif result["ai_error"]:
                     self.report({"WARNING"}, "AI に頼れませんでした: %s" % result["ai_error"])
+                if result["explicit_height"] is not None:
+                    height = result["explicit_height"]
+                    self.report(
+                        {"INFO"},
+                        "説明文の身長 %.2fm を使う(ダイアログの値より優先)" % height,
+                    )
             if self.image_path.strip():
                 for note in image_input.apply_image(
                     spec, self.image_path, count=self.image_colors
@@ -610,7 +625,7 @@ class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
                     self.report({"INFO"}, note)
                 origin += " + 画像の色"
             spec["meters_per_unit"] = self.meters_per_unit
-            spec["assumed_height"] = self.assumed_height
+            spec["assumed_height"] = height
             spec = costume_spec.normalize_spec(spec)
         except (costume_spec.SpecError, image_input.ImageInputError, ValueError) as error:
             self.report({"ERROR"}, "spec を組み立てられませんでした: %s" % error)
@@ -640,7 +655,9 @@ class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
 
 def _refuse_ai(_prompt):
     """AI を使わない設定のときに request_spec を確実に失敗させる"""
-    raise ai_bridge.AIBridgeError("AI 利用がオフです(オペレーターのオプションで有効にできます)")
+    raise ai_bridge.AIBridgeError(
+        "AI 利用をオフにしているため、キーワード辞書だけで解釈しました"
+    )
 
 
 _classes = (
