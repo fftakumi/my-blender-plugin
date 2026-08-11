@@ -44,6 +44,8 @@ CUFF_BAND_STEP_MAX = 0.01
 BUTTON_MIN_COUNT = 4
 #: ボタンの間隔の変動係数の上限
 BUTTON_GAP_CV_MAX = 0.15
+#: 前立ての幅 / 前開きの隙間の幅 の下限。同じ幅だと縁が合って筋が見えるので余裕を持たせる
+PLACKET_COVER_MARGIN = 1.5
 
 
 # ------------------------------------------------------------------ 小物
@@ -752,6 +754,15 @@ def part_report(mesh, height_units):
         hard["placket_centred"] = _check(
             report["measured_placket_centred"], report["measured_placket_width"], "前中心"
         )
+        # 前立ては前開きの隙間より広くないと、隙間が黒い筋として見える。
+        # 「幅が設計どおり」だけでは覆えているかを見ていない
+        gap = design.get("front_gap_width")
+        if gap is not None:
+            hard["placket_covers_the_opening"] = _check(
+                report["measured_placket_width"] >= gap * PLACKET_COVER_MARGIN,
+                (report["measured_placket_width"], gap),
+                ">= 隙間 × %.1f" % PLACKET_COVER_MARGIN,
+            )
 
     # ---- 定義 #14: ボタン ----
     if design.get("button_count"):

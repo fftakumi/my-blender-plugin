@@ -44,7 +44,7 @@
         "shoulder_depth_ratio": 0.55,
         "neck_drop_scale": 1.0,
         "neck_fade": 0.09,
-        "armhole_segments": 3
+        "armhole_segments": 2
       }
     },
     {
@@ -60,7 +60,7 @@
         "cuff_scale": 1.0,
         "droop_degrees": 35.0,
         "bicep_scale": 1.0,
-        "cap_fraction": 0.22,
+        "cap_fraction": 0.3,
         "elbow_fraction": 0.5,
         "cuff_start": 0.9
       }
@@ -78,7 +78,7 @@
         "cuff_scale": 1.0,
         "droop_degrees": 35.0,
         "bicep_scale": 1.0,
-        "cap_fraction": 0.22,
+        "cap_fraction": 0.3,
         "elbow_fraction": 0.5,
         "cuff_start": 0.9
       }
@@ -114,8 +114,7 @@
         "width": 0.019,
         "standoff": 0.0016,
         "bulge": 0.18,
-        "columns": 5,
-        "rings": 10
+        "columns": 5
       }
     },
     {

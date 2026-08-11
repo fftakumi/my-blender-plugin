@@ -202,6 +202,48 @@ def test_placket_is_a_band_of_the_declared_width_on_the_front_centre():
     assert entry["measured_placket_width"] == pytest.approx(0.019 * 1.58, rel=0.05)
 
 
+def test_placket_is_wider_than_the_front_opening_it_covers():
+    """定義 #13: 「幅が設計どおり」だけでは覆えているかを見ていない。
+
+    分割数28のとき前開きの隙間は 3.3cm あり、幅 3.0cm の前立てでは覆えず、
+    裾のアップで黒い筋として出た。**相手より広いこと**を別のゲートにする。
+    """
+    normalized, built = build_blouse()
+    placket = part_named(built, "Blouse_Placket")
+    entry = gates(built, normalized, "Blouse_Placket")
+    assert "placket_covers_the_opening" in entry["hard"]
+    assert entry["hard"]["placket_covers_the_opening"]["ok"]
+    assert placket.design["front_gap_width"] < placket.design["placket_width"]
+
+
+def test_a_front_opening_wider_than_the_placket_fails():
+    normalized, built = build_blouse({"Blouse_Bodice": {"front_gap": 0.03}})
+    entry = gates(built, normalized, "Blouse_Placket")
+    assert "placket_covers_the_opening" in entry["failed"]
+
+
+def test_the_front_opening_width_does_not_depend_on_the_segment_count():
+    """隙間は分割数の副産物にしない(分割数を変えただけで前立てからはみ出す)"""
+    widths = []
+    for segments in (20, 28, 40):
+        _normalized, built = build_blouse({"Blouse_Bodice": {"segments": segments}})
+        widths.append(part_named(built, "Blouse_Bodice").design["front_gap_width"])
+    assert max(widths) == pytest.approx(min(widths), rel=1e-6)
+    assert max(widths) == pytest.approx(0.006 * 1.58, rel=1e-6)
+
+
+def test_the_placket_follows_the_bodice_profile_without_cutting_into_it():
+    """前立ての縦の刻みは胴の前面プロファイルと同じ z。等間隔だと食い込む"""
+    normalized, built = build_blouse()
+    report = validate.costume_report(built, normalized)
+    pair = next(
+        item
+        for item in report["part_pairs"]
+        if {item["a"], item["b"]} == {"Blouse_Bodice", "Blouse_Placket"}
+    )
+    assert pair["intersections"] == 0
+
+
 def test_buttons_are_counted_from_the_mesh_not_from_the_declaration():
     """定義 #14: 個数は境界ループから数え直す(申告を信じると恒真になる)"""
     normalized, built = build_blouse()

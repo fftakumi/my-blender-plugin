@@ -193,14 +193,22 @@ def build_waistband(part, table, scale):
 FRONT_ANGLE = -math.pi / 2
 
 
-def _front_open_angles(segments):
+def _front_open_angles(segments, gap_angle=None):
     """前中心に開き口が来るように角度を並べる。
 
-    loft_rings(closed=False) は最後の分割と最初の分割の間に面を作らないので、
-    その隙間が前中心に来るよう半ステップずらして始める。
+    loft_rings(closed=False) は最後の分割と最初の分割の間に面を作らない。
+    その隙間が前開きになるので、**隙間の角度を明示して細くできる**ようにする。
+
+    既定(gap_angle=None)は1分割ぶん。分割数を増やすと隙間も細くなるが、
+    分割数28だと隙間が 3.3cm もあり、幅 3.0cm の前立てで覆いきれずに
+    裾のアップで黒い筋として出た。前立てより細くすること。
     """
-    step = 2.0 * math.pi / segments
-    return [FRONT_ANGLE + step * (0.5 + index) for index in range(segments)]
+    if gap_angle is None:
+        gap_angle = 2.0 * math.pi / segments
+    if not 0.0 < gap_angle < 2.0 * math.pi:
+        raise PartError("前開きの隙間の角度が範囲外です: %r" % (gap_angle,))
+    step = (2.0 * math.pi - gap_angle) / (segments - 1)
+    return [FRONT_ANGLE + gap_angle * 0.5 + step * index for index in range(segments)]
 
 
 def _side_segment(angles, target):
@@ -228,7 +236,6 @@ def build_bodice(part, table, scale):
 
     segments = params["segments"]
     body_rings = params["rings"]
-    angles = _front_open_angles(segments)
     body_depth = table["depth_ratio"]
 
     # 襟ぐり: 首の**素寸** + 襟ぐり固有のゆとり。胴のゆとり(ease)は首には掛けない
@@ -238,6 +245,20 @@ def build_bodice(part, table, scale):
 
     # 肩線: 長半径がそのまま肩幅の半分(定義 #3 をここで満たす)
     shoulder_semi = table["shoulder_width"] / 2.0
+
+    # 胴: 肩の下でバストへ、ウエストで少し絞り、そこから裾へ
+    bust_semi = modulate.ellipse_semi_major(table["bust"], body_depth)
+    waist_semi = modulate.ellipse_semi_major(table["bust"] * params["waist_scale"], body_depth)
+    hem_semi = modulate.ellipse_semi_major(table["bust"] * params["hem_scale"], body_depth)
+
+    # 前開きの隙間は**幅で**指定する。分割数の副産物にすると、分割数を変えた
+    # だけで前立てからはみ出す(28分割で 3.3cm あり、幅 3.0cm の前立てで隠れなかった)。
+    # 隙間の幅は x 方向の差し渡しなので、**いちばん太いリング**で指定幅になるよう
+    # 角度を決める。そこが隙間の最大値になり、前立てが覆う相手になる
+    front_gap = params["front_gap"] * height
+    widest_semi = max(neck_semi, shoulder_semi, bust_semi, waist_semi, hem_semi)
+    gap_angle = 2.0 * math.asin(min(0.9, front_gap / (2.0 * widest_semi)))
+    angles = _front_open_angles(segments, gap_angle)
 
     # 肩傾斜(定義 #9): 側頸点は肩先より「水平の渡り × tan(傾斜)」だけ高い
     slope = math.radians(table["shoulder_slope_degrees"])
@@ -261,10 +282,6 @@ def build_bodice(part, table, scale):
             "着丈(%.3fm)が短すぎて裾が肩線より上に来ます" % (garment_length,)
         )
 
-    # 胴: 肩の下でバストへ、そこから裾へ
-    bust_semi = modulate.ellipse_semi_major(table["bust"], body_depth)
-    waist_semi = modulate.ellipse_semi_major(table["bust"] * params["waist_scale"], body_depth)
-    hem_semi = modulate.ellipse_semi_major(table["bust"] * params["hem_scale"], body_depth)
     span = shoulder_z - hem_z
     spacing = span / (body_rings - 1)
     bust_t = max(0.0, min(1.0, params["bust_t"]))
@@ -391,6 +408,11 @@ def build_bodice(part, table, scale):
             (front_z * scale, -semi * depth * scale)
             for _zs, front_z, semi, depth in rows
         ],
+        # 前開きの隙間の最大幅。前立てはこれより広くないと隙間が見える(定義 #13)
+        "front_gap_width": max(
+            2.0 * semi * math.sin(gap_angle * 0.5) for _zs, _front_z, semi, _depth in rows
+        )
+        * scale,
     }
     mesh.design["armholes"] = _armhole_frames(ring_points, centres, segments, skip)
     from . import validate as validate_module
@@ -501,6 +523,13 @@ def build_sleeve(part, table, scale, host=None):
     cuff_start = min(0.999, max(elbow + 1e-3, params["cuff_start"]))
     ts = modulate.axis_fractions(rings)
 
+    # 袖山では**角度も**等間隔へ寄せる。半径だけ寄せると、袖ぐりの穴の不揃いな
+    # 角度が袖口まで残って「円のつもりの多角形」になり、袖口の周長が設計より
+    # 数%短くなる(袖ぐりを狭くすると許容差を超えて落ちた)
+    step = 2.0 * math.pi / len(polar)
+    for index, item in enumerate(polar):
+        item["even_angle"] = polar[0]["angle"] + step * index
+
     ring_points = []
     for t in ts:
         blend = modulate.smoothstep(min(1.0, t / cap))  # 穴の形 → 円
@@ -513,9 +542,10 @@ def build_sleeve(part, table, scale, host=None):
         points = []
         for item in polar:
             radius = item["radius"] + (target_radius - item["radius"]) * blend
+            angle = item["angle"] + (item["even_angle"] - item["angle"]) * blend
             axial = item["axial"] * (1.0 - blend) + axial_plane
-            u = radius * math.cos(item["angle"])
-            v = radius * math.sin(item["angle"])
+            u = radius * math.cos(angle)
+            v = radius * math.sin(angle)
             points.append(
                 tuple(
                     centre[axis] + right[axis] * u + up[axis] * v + direction[axis] * axial
@@ -720,7 +750,6 @@ def build_placket(part, table, scale, host=None):
 
     top_z = profile[0][0] + params["top_extend"] * height * scale
     bottom_z = profile[-1][0]
-    rows = max(2, params["rings"])
 
     def front_y(z):
         """胴の前面の y を z で線形補間する(プロファイルは上から下へ並んでいる)"""
@@ -736,10 +765,18 @@ def build_placket(part, table, scale, host=None):
                 return upper_y + (lower_y - upper_y) * local
         return profile[-1][1]
 
+    # 縦の刻みは**胴の前面プロファイルと同じ z** にする。等間隔に刻むと、
+    # 前面の y が急に動く区間(襟ぐり→肩線で4.5cmの間に5cm前へ出る)を
+    # 前立て側が直線で跨いでしまい、胴の中へ食い込んで交差の検査に落ちる。
+    # 袖の周方向分割数を袖ぐりから決めたのと同じで、相手の実物に合わせる
+    heights = [z for z, _y in profile if bottom_z <= z <= top_z]
+    if top_z - heights[0] > 1e-12:
+        heights.insert(0, top_z)
+    if len(heights) < 2:
+        raise PartError("前立てを張る高さが足りません: %r" % (heights,))
+
     ring_points = []
-    for row in range(rows):
-        t = row / (rows - 1)
-        z = top_z + (bottom_z - top_z) * t
+    for z in heights:
         base_y = front_y(z) - standoff
         points = []
         for column in range(columns):
@@ -773,6 +810,8 @@ def build_placket(part, table, scale, host=None):
         "placket_top_z": top_z,
         "placket_bottom_z": bottom_z,
         "placket_front_y": min(point[1] for ring in ring_points for point in ring),
+        # 覆う相手。これより狭いと前開きが黒い筋として見える
+        "front_gap_width": (host.design or {}).get("front_gap_width"),
     }
     return mesh
 
