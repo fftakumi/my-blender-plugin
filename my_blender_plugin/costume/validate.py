@@ -69,6 +69,10 @@ CAPE_MIN_FLARE = 1.3
 #: 裾の開き幅の許容差(比)。寸法ではなく「前が開いている」ことの確認なので広め
 CAPE_GAP_TOL = 0.10
 
+# ---- フードの「形」の定義(docs/garments.md)のしきい値 ----
+#: フードの高さの許容差(比)
+HOOD_DEPTH_TOL = 0.05
+
 
 # ------------------------------------------------------------------ 小物
 
@@ -565,6 +569,27 @@ def cape_metrics(mesh):
     }
 
 
+def hood_metrics(mesh):
+    """フードの実測(メッシュだけから出す)。
+
+    リング行は ring_size × ring_count の添字構造から復元する(holed でない前提)。
+    """
+    size, count = mesh.ring_size, mesh.ring_count
+    rows = [list(range(row * size, (row + 1) * size)) for row in range(count)]
+    arcs = [open_arc_length(mesh.verts, row) for row in rows]
+    gaps = [
+        _distance(mesh.verts[row[0]], mesh.verts[row[-1]]) for row in rows
+    ]
+    # リングは上(先端)から下(縫い目)へ並ぶ。縫い目 = 最終行
+    seam_top_z = max(mesh.verts[index][2] for index in rows[-1])
+    top_z = max(point[2] for point in mesh.verts)
+    return {
+        "measured_hood_max_arc": max(arcs),
+        "measured_hood_depth": top_z - seam_top_z,
+        "measured_hood_face_gap": max(gaps),
+    }
+
+
 # ------------------------------------------------------------------ パーツ1枚の検査
 
 
@@ -735,6 +760,25 @@ def part_report(mesh, height_units):
         # 前が開いていること(裾の開き幅が設計どおり)
         hard["cape_front_open"] = _within(
             report["measured_hem_gap"], design["cape_hem_gap"], CAPE_GAP_TOL
+        )
+    # ---- フードの定義(docs/garments.md)を検証項目にしたもの ----
+    if design.get("hood_arc_floor"):
+        report.update(hood_metrics(mesh))
+        # 頭を包んでいること(一番太いリングが頭囲ゆとり込みの3/4以上)
+        hard["hood_wraps_the_head"] = _check(
+            report["measured_hood_max_arc"] >= design["hood_arc_floor"],
+            report["measured_hood_max_arc"],
+            ">= %.4f" % design["hood_arc_floor"],
+        )
+        # 頭が入る高さがあること(縫い目の上端から頂まで)
+        hard["hood_depth"] = _within(
+            report["measured_hood_depth"], design["hood_depth"], HOOD_DEPTH_TOL
+        )
+        # 顔の開口が開いていること
+        hard["hood_face_open"] = _check(
+            report["measured_hood_face_gap"] >= design["hood_face_gap_floor"],
+            report["measured_hood_face_gap"],
+            ">= %.4f" % design["hood_face_gap_floor"],
         )
     # ---- ブラウスの定義(docs/garments.md)を検証項目にしたもの ----
     if design.get("shoulder_width"):

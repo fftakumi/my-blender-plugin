@@ -258,6 +258,109 @@ def build_cape(part, table, scale):
     return mesh
 
 
+def build_hood(part, table, scale, host=None):
+    """フード。host(cape / bodice)の首の縫い目 = top リングから頭を包む。
+
+    定義は docs/garments.md。リング0を host の頂点そのものにするので継ぎ目はゼロ
+    (collar と同じ手口)。上へ行くほど:
+    - 半径: 首 → 頭囲(ゆとり込み)へ膨らみ、taper_start から先端へ絞る
+      (頂点数を変えられないので、キャップは張らず先端の小さな弧で終える)
+    - 前の開口: host の前開き角から face_open_degrees へ、角度の再配置で広げる
+    - 中心: 後ろへ逃がす(頭は首の真上ではなく少し後ろにある)
+    """
+    if host is None:
+        raise PartError("hood は attach_to で首の縫い目を持つパーツを指定してください")
+    indices = host.rings.get("top")
+    if not indices:
+        raise PartError("%s に首の縫い目(top)がありません" % (host.name,))
+    params = part["params"]
+
+    seam = [host.verts[index] for index in indices]
+    count = len(seam)
+    if count < 4:
+        raise PartError("首の縫い目の頂点が少なすぎます: %d" % (count,))
+    cx = sum(point[0] for point in seam) / count
+    cy = sum(point[1] for point in seam) / count
+
+    # 縫い目を前中心まわりの極座標に分解。host は前開きの弧なので、
+    # 前中心からの相対角に直せば [gap/2, 2π-gap/2] の単調列になる
+    seam_rel = []
+    for x, y, z in seam:
+        relative = (math.atan2(y - cy, x - cx) - FRONT_ANGLE) % (2.0 * math.pi)
+        seam_rel.append((relative, math.hypot(x - cx, y - cy), z))
+    host_gap = seam_rel[0][0] + (2.0 * math.pi - seam_rel[-1][0])
+    neck_radius = sum(radius for _rel, radius, _z in seam_rel) / count
+    seam_z_top = max(point[2] for point in seam)
+
+    head_radius = (
+        table["head_circumference"] * (1.0 + params["head_ease"]) / (2.0 * math.pi) * scale
+    )
+    hood_height = table["head_height"] * params["height_scale"] * scale
+    face_gap = math.radians(params["face_open_degrees"])
+    taper_start = params["taper_start"]
+
+    rings = params["rings"]
+    ring_points = []
+    for index in range(rings):
+        t = index / (rings - 1)
+        if index == 0:
+            ring_points.append(list(seam))
+            continue
+        grow = modulate.smoothstep(min(1.0, t / params["blend"]))
+        gap_t = host_gap + (face_gap - host_gap) * modulate.smoothstep(t)
+        step = (2.0 * math.pi - gap_t) / (count - 1)
+        radius_t = neck_radius + (head_radius - neck_radius) * grow
+        if t > taper_start:
+            shrink = modulate.smoothstep((t - taper_start) / (1.0 - taper_start))
+            radius_t *= 1.0 - (1.0 - params["tip_ratio"]) * shrink
+        center_y = cy - params["back_shift"] * head_radius * t
+        points = []
+        for j, (rel, seam_radius, seam_z) in enumerate(seam_rel):
+            target_rel = gap_t * 0.5 + step * j
+            rel_j = rel + (target_rel - rel) * grow
+            radius_j = seam_radius + (radius_t - seam_radius) * grow
+            angle = FRONT_ANGLE + rel_j
+            z = seam_z + (seam_z_top - seam_z) * grow + hood_height * t
+            points.append(
+                (cx + radius_j * math.cos(angle), center_y + radius_j * math.sin(angle), z)
+            )
+        ring_points.append(points)
+
+    # リングは下(縫い目)から上(先端)へ積んだので、巻き方向の規約
+    # (上から下へ)に合わせて逆順で渡す
+    mesh = kernels.loft_rings(
+        list(reversed(ring_points)), name=part["name"], closed=False, tubular=False
+    )
+    mesh.material = part["material"]
+    mesh.design = {
+        "top_perimeter": None,
+        "bottom_perimeter": None,
+        "bottom_fit_perimeter": None,
+        "bottom_perimeter_note": "首の縫い目の実物に乗るので周長は host 側で検算する",
+        "top_z": max(point[2] for point in ring_points[-1]),
+        "bottom_z": min(point[2] for point in seam),
+        "length": None,  # 高さは hood_depth で見る(縫い目の前下がりが z 全幅に混ざるため)
+        "depth_ratio_top": None,
+        "depth_ratio_bottom": None,
+        "radial_modulations": None,  # 中心が後ろへ逃げるので周期成分の検査は掛けられない
+        "pleats": 0,
+        "pleat_depth": 0.0,
+        "boundary_loops": 1,
+        "boundary_verts": None,
+        # ---- フード固有(validate 側のゲートが発火する)----
+        # 頭を包むこと: 一番太いリングの弧長の下限(頭囲×ゆとりの3/4。設計値)
+        "hood_arc_floor": table["head_circumference"]
+        * (1.0 + params["head_ease"])
+        * 0.75
+        * scale,
+        # 縫い目の上端からフードの頂までの高さ(設計値)
+        "hood_depth": hood_height,
+        # 顔の開口の幅の下限: 設計の開口弦長の半分(開いていることの確認)
+        "hood_face_gap_floor": head_radius * math.sin(face_gap * 0.5),
+    }
+    return mesh
+
+
 # ------------------------------------------------------------------ ブラウス
 #
 # 定義は docs/garments.md。要点だけ:
@@ -1084,12 +1187,13 @@ BUILDERS = {
     "collar_fall": build_collar_fall,
     "placket": build_placket,
     "buttons": build_buttons,
+    "hood": build_hood,
 }
 
 #: 他のパーツの**実物**から作るパーツ。build_all が依存順を保証する。
 #: 継ぎ目や位置を計算し直さずに相手の頂点をそのまま使うので、ずれが原理的に起きない
 DEPENDENT_TYPES = frozenset(
-    ("sleeve", "collar", "collar_fall", "placket", "buttons")
+    ("sleeve", "collar", "collar_fall", "placket", "buttons", "hood")
 )
 
 # spec が知っているパーツ種別と、ここで作れる種別がずれていないことを import 時に確かめる

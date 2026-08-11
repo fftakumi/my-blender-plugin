@@ -160,6 +160,19 @@ _BUTTONS = {
     "holes": (int, 4, 0, 8),  # 穴の数。シャツは4つ穴が標準
 }
 
+#: フード。host(cape / bodice)の首の縫い目(top リング)から頭を包み、
+#: 先端へ絞る前の開いたシート(定義は docs/garments.md)。数値はすべて設計値
+_HOOD = {
+    "rings": (int, 12, 4, 64),
+    "head_ease": (float, 0.15, 0.0, 1.0),  # 頭囲に掛けるゆとり
+    "height_scale": (float, 1.25, 0.8, 3.0),  # フードの高さ / 全頭高(かぶりの余裕)
+    "back_shift": (float, 0.35, 0.0, 1.0),  # 中心を後ろへ逃がす量 / 頭の半径
+    "face_open_degrees": (float, 120.0, 20.0, 300.0),  # 顔の開口の角度(上端側)
+    "blend": (float, 0.35, 0.05, 1.0),  # 首の形→頭の円へ馴染ませる区間 / 高さ
+    "taper_start": (float, 0.65, 0.3, 0.95),  # 先端へ絞り始める位置 / 高さ
+    "tip_ratio": (float, 0.10, 0.02, 0.5),  # 先端の半径 / 頭の半径
+}
+
 PART_SCHEMAS = {
     "skirt_body": _SKIRT_BODY,
     "waistband": _WAISTBAND,
@@ -170,6 +183,7 @@ PART_SCHEMAS = {
     "collar_fall": _COLLAR_FALL,
     "placket": _PLACKET,
     "buttons": _BUTTONS,
+    "hood": _HOOD,
 }
 
 #: 依存パーツの取り付け先(type → 取り付け先パーツの type)。
@@ -182,6 +196,7 @@ ATTACH_TARGETS = {
     "collar_fall": "collar",
     "placket": "bodice",
     "buttons": "placket",
+    "hood": "cape か bodice(首の縫い目 = top リングを持つ)",
 }
 
 #: 他のパーツの**実物**から作るパーツ。spec に attach_to が必須

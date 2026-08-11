@@ -102,6 +102,7 @@ GARMENT_PRESETS = {
     "blouse": "blouse",
     "vest": "vest",
     "cape": "cape",
+    "hood": "hooded_cape",
 }
 
 #: 衣装の種類の見出し語。値は GARMENT_PRESETS のキー。
@@ -112,6 +113,9 @@ GARMENT_WORDS = {
     "シャツ": "blouse", "shirt": "blouse",
     "ワイシャツ": "blouse", "トップス": "blouse",
     "ベスト": "vest", "vest": "vest", "ジレ": "vest",
+    # フードはケープ・マントより**先に**書く。_find_words は同じ長さなら辞書の
+    # 並び順で返すので、「フード付きのマント」はフード付きの側(hooded_cape)が勝つ
+    "フード": "hood", "hood": "hood", "hoodie": "hood", "パーカー": "hood",
     "ケープ": "cape", "cape": "cape", "マント": "cape", "ポンチョ": "cape",
 }
 
