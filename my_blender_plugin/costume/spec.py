@@ -177,10 +177,30 @@ _HOOD = {
     "tip_ratio": (float, 0.10, 0.02, 0.5),  # 先端の半径 / 頭の半径
 }
 
+#: パンツ。腰からは1本の筒、股からは2本の脚(定義と K2 の作りは docs/garments.md)。
+#: 寸法の絶対値はサイズ表(rise / inseam / thigh / knee / hem_opening)から取り、
+#: spec には倍率だけを書かせる
+_PANTS = {
+    "waist_z": (float, 0.62, 0.0, 1.0),  # ウエストラインの高さ /H
+    "segments": (int, 32, 8, 256),  # 周方向の分割数。**4の倍数必須**(股を前後で割る)
+    "hip_rings": (int, 6, 2, 64),  # 腰〜股のリング数
+    "leg_rings": (int, 12, 3, 128),  # 股〜裾のリング数
+    "crotch_segments": (int, 4, 1, 32),  # 股の縫い目の分割数
+    "rise_scale": (float, 1.0, 0.5, 2.0),  # 股上 / サイズ表の股上
+    "inseam_scale": (float, 1.0, 0.1, 1.5),  # 股下 / サイズ表の股下(0.5 でハーフパンツ)
+    "thigh_ease": (float, 0.10, 0.0, 1.0),  # わたりに掛けるゆとり
+    "knee_scale": (float, 1.0, 0.5, 2.0),  # 膝周 / サイズ表の膝周
+    "hem_scale": (float, 1.0, 0.3, 3.0),  # 裾周 / サイズ表の裾周(>1 でワイドパンツ)
+    # 分岐リング → 円形の脚へ馴染ませる区間 / 股下。太もも保持区間(0.3)より
+    # 手前で馴染み切らないと thigh の検証リングが円にならないので上限 0.3
+    "blend": (float, 0.25, 0.05, 0.3),
+}
+
 PART_SCHEMAS = {
     "skirt_body": _SKIRT_BODY,
     "waistband": _WAISTBAND,
     "cape": _CAPE,
+    "pants": _PANTS,
     "bodice": _BODICE,
     "sleeve": _SLEEVE,
     "collar": _COLLAR,
@@ -344,6 +364,13 @@ def _modulation_errors(part, where):
         return []
 
     errors = []
+    if part.get("type") == "pants" and segments % 4 != 0:
+        # 股を前後中心で割るので、前中心・後ろ中心・両脇に頂点が要る。
+        # 黙って丸めない — このエラー文がそのまま AI への修正指示になる
+        errors.append(
+            "%s: pants の segments(%d)は4の倍数にしてください"
+            "(前後中心と両脇に頂点が要ります)" % (where, segments)
+        )
     pleats = params.get("pleats") or 0
     if pleats:
         if segments % pleats != 0:

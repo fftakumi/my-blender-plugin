@@ -361,6 +361,184 @@ def build_hood(part, table, scale, host=None):
     return mesh
 
 
+def build_pants(part, table, scale):
+    """パンツ。腰からは1本の筒、股からは2本の脚(定義は docs/garments.md)。
+
+    分岐は K1(リング列のロフト)では表現できない唯一の形。胴(腰→股)・左脚・
+    右脚を別々に K1 でロフトし、K2(kernels.weld_meshes)で溶接する。
+    股リングの半周と股の縫い目(ブリッジ)の頂点は**同じタプルのまま**両脚に渡す
+    (再計算すると誤差で溶接できず、duplicate_verts / nonmanifold で落ちる)。
+    """
+    params = part["params"]
+    height = table["height"]
+    segments = params["segments"]
+    if segments % 4 != 0:  # pragma: no cover - spec 側で弾かれている
+        raise PartError("pants の segments は4の倍数にしてください: %d" % (segments,))
+
+    waist_z_m = params["waist_z"] * height
+    rise_m = table["rise"] * params["rise_scale"]
+    inseam = table["inseam"] * params["inseam_scale"] * scale
+    thigh = table["thigh"] * (1.0 + params["thigh_ease"]) * scale
+    knee = table["knee"] * params["knee_scale"] * scale
+    hem = table["hem_opening"] * params["hem_scale"] * scale
+
+    # 胴(腰→股): スカートと同じ「ウエスト→ヒップに沿う」プロファイル。広がりは無し
+    profile = modulate.skirt_profile(
+        rings=params["hip_rings"],
+        length=rise_m,
+        waist_perimeter=table["waist"],
+        hip_perimeter=table["hip"],
+        hip_drop=table["hip_drop"],
+        hip_hug=1.0,
+        flare=1.0,
+        flare_curve=1.0,
+        depth_ratio=table["depth_ratio"],
+    )
+    angles = modulate.circle_angles(segments)
+    torso_rings = [
+        kernels.ring_from_polar(
+            [semi * scale] * segments,
+            angles,
+            (waist_z_m - t * rise_m) * scale,
+            depth_ratio=depth,
+        )
+        for semi, depth, t in zip(profile["semi_major"], profile["depth_ratio"], profile["t"])
+    ]
+    torso = kernels.loft_rings(torso_rings, name=part["name"], closed=True, tubular=True)
+
+    # 股リングを前後中心で割る。segments%4==0 なので前中心・後ろ中心に頂点が必ずある
+    crotch = torso_rings[-1]
+    crotch_z = (waist_z_m - rise_m) * scale
+    front = _side_segment(angles, FRONT_ANGLE)
+    back = _side_segment(angles, math.pi / 2.0)
+
+    # 股の縫い目(ブリッジ): 前中心 → 後ろ中心を x=0 の直線で渡る
+    crotch_segments = params["crotch_segments"]
+    bridge = [
+        tuple(
+            crotch[front][axis]
+            + (crotch[back][axis] - crotch[front][axis]) * step / crotch_segments
+            for axis in range(3)
+        )
+        for step in range(1, crotch_segments)
+    ]
+
+    def torso_arc(start, stop):
+        indices = [start]
+        while indices[-1] != stop:
+            indices.append((indices[-1] + 1) % segments)
+        return [crotch[index] for index in indices]
+
+    # 分岐リング(どちらも +z から見て反時計回り = ロフトで法線が外向き)。
+    # 左脚(x>0): 前中心→(+x側)→後ろ中心 + ブリッジを後ろ→前へ。
+    # 右脚(x<0): 後ろ中心→(-x側)→前中心 + ブリッジを前→後ろへ。
+    # ブリッジの辺を両脚が逆向きに辿るので、溶接後の巻き方向が揃う
+    left_ring = torso_arc(front, back) + list(reversed(bridge))
+    right_ring = torso_arc(back, front) + list(bridge)
+
+    leg_rings_count = params["leg_rings"]
+    blend = params["blend"]
+
+    def leg_loft(ring0):
+        count = len(ring0)
+        cx = sum(point[0] for point in ring0) / count
+        cy = sum(point[1] for point in ring0) / count
+        side_sign = 1.0 if cx >= 0.0 else -1.0
+        # 極分解は「各頂点を円周上のどこへ送るか」の順序決めに使う。
+        # リングは CCW なので unwrap すれば角度は増える一方
+        unwrapped = []
+        previous = None
+        for x, y, _z in ring0:
+            angle = math.atan2(y - cy, x - cx)
+            if previous is not None:
+                while angle < previous - math.pi:
+                    angle += 2.0 * math.pi
+                while angle > previous + math.pi:
+                    angle -= 2.0 * math.pi
+            unwrapped.append(angle)
+            previous = angle
+        start_angle = unwrapped[0]
+        thigh_r = thigh / (2.0 * math.pi)
+        knee_r = knee / (2.0 * math.pi)
+        hem_r = hem / (2.0 * math.pi)
+        # 脚の内側の壁が x=0 を跨ぐと反対の脚と貫通する(自己交差ゲートで落ちた)。
+        # 円の中心を「半径 + 隙間」だけ体側へ逃がして、内壁を前後中心面の手前に保つ
+        inner_gap = 0.05 * thigh_r
+        rings_points = [list(ring0)]
+        for index in range(1, leg_rings_count + 1):
+            t = index / leg_rings_count
+            grow = modulate.smoothstep(min(1.0, t / blend))
+            target_radius = modulate.leg_radius_profile(t, thigh_r, knee_r, hem_r)
+            centre_x = side_sign * max(abs(cx), target_radius + inner_gap)
+            z = crotch_z - inseam * t
+            points = []
+            for j, (x0, y0, _z0) in enumerate(ring0):
+                even = start_angle + 2.0 * math.pi * j / count
+                tx = centre_x + target_radius * math.cos(even)
+                ty = cy + target_radius * math.sin(even)
+                points.append(
+                    (x0 + (tx - x0) * grow, y0 + (ty - y0) * grow, z)
+                )
+            rings_points.append(points)
+        return kernels.loft_rings(
+            rings_points, name=part["name"], closed=True, tubular=False
+        )
+
+    left = leg_loft(left_ring)
+    right = leg_loft(right_ring)
+    mesh, maps = kernels.weld_meshes([torso, left, right], name=part["name"])
+    mesh.material = part["material"]
+    torso_map, left_map, right_map = maps
+
+    # 溶接後は添字計算が使えないので、検証に使うリングをここで登録する
+    mesh.rings["top"] = [torso_map[index] for index in torso.rings["top"]]
+    half = segments // 2 + 1  # 分岐リングの外周部分の頂点数
+    leg_size = len(left_ring)
+    mesh.rings["crotch"] = [torso_map[index] for index in torso.rings["bottom"]] + [
+        left_map[position] for position in range(half, leg_size)
+    ]
+    mesh.rings["hem_l"] = [left_map[index] for index in left.rings["bottom"]]
+    mesh.rings["hem_r"] = [right_map[index] for index in right.rings["bottom"]]
+
+    # thigh の検証リング: ブレンドが終わり(完全な円)、かつ太もも保持区間
+    # (THIGH_HOLD_T)内にあるリング行。無ければ thigh ゲートは掛けない
+    thigh_row = None
+    for index in range(1, leg_rings_count + 1):
+        t = index / leg_rings_count
+        if t >= blend and t <= modulate.THIGH_HOLD_T:
+            thigh_row = index
+    if thigh_row is not None:
+        for label, mapping in (("l", left_map), ("r", right_map)):
+            mesh.rings["thigh_" + label] = [
+                mapping[position]
+                for position in range(thigh_row * leg_size, (thigh_row + 1) * leg_size)
+            ]
+
+    mesh.design = {
+        "top_perimeter": table["waist"] * scale,
+        "bottom_perimeter": None,
+        "bottom_fit_perimeter": None,
+        "bottom_perimeter_note": "裾は2本あるので pants_hem_l / pants_hem_r で見る",
+        "top_z": waist_z_m * scale,
+        "bottom_z": crotch_z - inseam,
+        "length": None,  # 腰〜裾は rise+inseam に分けて検証する
+        "depth_ratio_top": profile["depth_ratio"][0],
+        "depth_ratio_bottom": None,
+        "radial_modulations": None,  # 溶接後の形なので周期成分の検査は掛けられない
+        "pleats": 0,
+        "pleat_depth": 0.0,
+        "boundary_loops": 3,  # 腰 1 + 裾 2
+        "boundary_verts": None,
+        # ---- パンツ固有(validate 側のゲートが発火する)----
+        "pants_rise": rise_m * scale,
+        "pants_inseam": inseam,
+        "pants_hem": hem,
+    }
+    if thigh_row is not None:
+        mesh.design["pants_thigh"] = thigh
+    return mesh
+
+
 # ------------------------------------------------------------------ ブラウス
 #
 # 定義は docs/garments.md。要点だけ:
@@ -1186,6 +1364,7 @@ BUILDERS = {
     "skirt_body": build_skirt_body,
     "waistband": build_waistband,
     "cape": build_cape,
+    "pants": build_pants,
     "bodice": build_bodice,
     "sleeve": build_sleeve,
     "collar": build_collar,

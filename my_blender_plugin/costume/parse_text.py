@@ -104,6 +104,7 @@ GARMENT_PRESETS = {
     "cape": "cape",
     "hood": "hooded_cape",
     "dress": "onepiece",
+    "pants": "pants",
 }
 
 #: 衣装の種類の見出し語。値は GARMENT_PRESETS のキー。
@@ -119,6 +120,7 @@ GARMENT_WORDS = {
     "フード": "hood", "hood": "hood", "hoodie": "hood", "パーカー": "hood",
     "ケープ": "cape", "cape": "cape", "マント": "cape", "ポンチョ": "cape",
     "ワンピース": "dress", "onepiece": "dress", "ドレス": "dress", "dress": "dress",
+    "パンツ": "pants", "ズボン": "pants", "スラックス": "pants", "pants": "pants",
 }
 
 #: 「24本プリーツ」「プリーツ32」などから山数を拾う

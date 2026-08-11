@@ -201,6 +201,65 @@ def loft_rings(
     )
 
 
+def weld_meshes(pieces, name, uv_pack=True):
+    """K2: 複数の K1 ロフトを、一致する座標の頂点を**共有**させて1枚に溶接する。
+
+    K1(loft_rings)は「同じ頂点数のリング列」しか受けないので、パンツの股のような
+    **分岐**は表現できない。分岐は「胴・左脚・右脚を別々にロフトし、境界の頂点を
+    共有させて溶接する」ことで作る(定義と罠は docs/garments.md のパンツの節)。
+
+    頂点の同一視は**座標の完全一致**で行う。呼ぶ側は共有したい頂点に
+    同じ計算結果のタプルをそのまま使うこと(再計算して丸め誤差を作ると
+    複製が残り、duplicate_verts / nonmanifold で落ちる)。
+
+    UV: 各ロフトは独立に 0-1 へ正規化されているので、そのまま重ねると島が重なる。
+    uv_pack=True で横並びに 1/N ずつ縮めて詰める(島の中のテクセル密度は保たれるが
+    島の間では揃わない — 既知の制限)。
+
+    戻り値: (PartMesh, maps)。maps[i][j] = pieces[i] の頂点 j の新しい index。
+    rings は空で返すので、呼ぶ側が maps で引き直して登録する。
+    """
+    if not pieces:
+        raise ValueError("溶接するメッシュがありません")
+    verts = []
+    lookup = {}
+    maps = []
+    quads = []
+    uv_loops = []
+    for piece_index, piece in enumerate(pieces):
+        mapping = []
+        for point in piece.verts:
+            found = lookup.get(point)
+            if found is None:
+                found = len(verts)
+                verts.append(point)
+                lookup[point] = found
+            mapping.append(found)
+        maps.append(mapping)
+        quads.extend(tuple(mapping[index] for index in quad) for quad in piece.quads)
+        if uv_pack:
+            width = 1.0 / len(pieces)
+            uv_loops.extend(
+                [((u + piece_index) * width, v * width) for u, v in loop]
+                for loop in piece.uv_loops
+            )
+        else:
+            uv_loops.extend(piece.uv_loops)
+    mesh = PartMesh(
+        name=name,
+        verts=verts,
+        quads=quads,
+        uv_loops=uv_loops,
+        rings={},
+        # 溶接後は「リング番号×分割数」の添字計算が成り立たない。
+        # ここの値は edge 統計に使われないダミー(edge_kinds は quad の頂点順で分類する)
+        ring_size=pieces[0].ring_size,
+        ring_count=sum(piece.ring_count for piece in pieces),
+        tubular=False,
+    )
+    return mesh, maps
+
+
 def _analytic_uv(ring_points, closed, span, ring_size):
     """実弧長にもとづく UV。u と v を同じ倍率で縮めるのでテクセル密度が揃う。
 

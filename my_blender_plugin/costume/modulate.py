@@ -317,6 +317,27 @@ def circle_angles(segments):
 #: 動かしてもゲートは逃げない(逃げると「全長を細めた円錐」が通ってしまう)
 SLEEVE_ELBOW_T = 0.5
 
+#: パンツの脚の形状定数。SLEEVE_ELBOW_T と同じ理屈で spec には持たせない
+THIGH_HOLD_T = 0.3  # 股〜ここまでは太もも周を保つ(脚の付け根は円筒に近い)
+KNEE_T = 0.5  # 膝の位置(股〜裾の比)
+
+
+def leg_radius_profile(t, thigh_radius, knee_radius, hem_radius):
+    """パンツの脚の半径。太もも(保持)→膝→裾へ smoothstep で細くなる。
+
+    検証の thigh ゲートは THIGH_HOLD_T までのリングを見るので、
+    保持区間を無くした「全長を細めた円錐の脚」は通らない。
+    """
+    if not 0.0 <= t <= 1.0:
+        raise ValueError("t は 0〜1 にしてください: %r" % (t,))
+    if t <= THIGH_HOLD_T:
+        return thigh_radius
+    if t <= KNEE_T:
+        local = smoothstep((t - THIGH_HOLD_T) / (KNEE_T - THIGH_HOLD_T))
+        return thigh_radius + (knee_radius - thigh_radius) * local
+    local = smoothstep((t - KNEE_T) / (1.0 - KNEE_T))
+    return knee_radius + (hem_radius - knee_radius) * local
+
 
 def sleeve_radius_profile(t, bicep_radius, cuff_radius, elbow, cuff_start, gather=1.0):
     """袖の半径。**肘まで二の腕の太さを保ち、袖口で絞られ、最後は一定(カフス)**。

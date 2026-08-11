@@ -73,6 +73,14 @@ CAPE_GAP_TOL = 0.10
 #: フードの高さの許容差(比)
 HOOD_DEPTH_TOL = 0.05
 
+# ---- パンツの「形」の定義(docs/garments.md)のしきい値 ----
+#: 股上・わたり・裾周の許容差(比)。すべて設計値由来の寸法なので少し広め
+PANTS_DIM_TOL = 0.05
+#: 股下の許容差(比)
+PANTS_INSEAM_TOL = 0.03
+#: 左右対称の許容: |左右の裾重心 x の和| / |差| の上限
+PANTS_SYMMETRY_TOL = 0.10
+
 
 # ------------------------------------------------------------------ 小物
 
@@ -761,6 +769,54 @@ def part_report(mesh, height_units):
         hard["cape_front_open"] = _within(
             report["measured_hem_gap"], design["cape_hem_gap"], CAPE_GAP_TOL
         )
+    # ---- パンツの定義(docs/garments.md)を検証項目にしたもの ----
+    if design.get("pants_rise"):
+        crotch_ring = mesh.rings.get("crotch") or []
+        crotch_z = (
+            sum(verts[index][2] for index in crotch_ring) / len(crotch_ring)
+            if crotch_ring
+            else None
+        )
+        report["measured_crotch_z"] = crotch_z
+        if top is not None and crotch_z is not None:
+            report["measured_rise"] = top["z"] - crotch_z
+            hard["pants_rise"] = _within(
+                report["measured_rise"], design["pants_rise"], PANTS_DIM_TOL
+            )
+        hems = {}
+        for side in ("l", "r"):
+            ring = mesh.rings.get("hem_" + side)
+            if not ring:
+                hard["pants_has_two_legs"] = _check(False, "hem_%s 無し" % side, "裾リング2本")
+                continue
+            hems[side] = ring_metrics(verts, ring)
+            report["measured_hem_perimeter_" + side] = hems[side]["perimeter"]
+            hard["pants_hem_" + side] = _within(
+                hems[side]["perimeter"], design["pants_hem"], PANTS_DIM_TOL
+            )
+            if crotch_z is not None:
+                report["measured_inseam_" + side] = crotch_z - hems[side]["z"]
+                hard["pants_inseam_" + side] = _within(
+                    report["measured_inseam_" + side],
+                    design["pants_inseam"],
+                    PANTS_INSEAM_TOL,
+                )
+            thigh_ring = mesh.rings.get("thigh_" + side)
+            if design.get("pants_thigh") and thigh_ring:
+                thigh = ring_metrics(verts, thigh_ring)
+                report["measured_thigh_perimeter_" + side] = thigh["perimeter"]
+                hard["pants_thigh_" + side] = _within(
+                    thigh["perimeter"], design["pants_thigh"], PANTS_DIM_TOL
+                )
+        if len(hems) == 2:
+            left_x = hems["l"]["center"][0]
+            right_x = hems["r"]["center"][0]
+            spread = abs(left_x - right_x)
+            hard["pants_legs_symmetric"] = _check(
+                spread > 0.0 and abs(left_x + right_x) <= PANTS_SYMMETRY_TOL * spread,
+                (left_x, right_x),
+                "裾の重心 x が左右対称",
+            )
     # ---- フードの定義(docs/garments.md)を検証項目にしたもの ----
     if design.get("hood_arc_floor"):
         report.update(hood_metrics(mesh))
