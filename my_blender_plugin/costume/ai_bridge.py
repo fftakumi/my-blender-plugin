@@ -143,22 +143,18 @@ def request_spec(text, runner=None, timeout=DEFAULT_TIMEOUT):
     return {"spec": normalized, "raw": raw, "prompt": prompt}
 
 
-def spec_from_text(text, runner=None, min_confidence=0.55, timeout=DEFAULT_TIMEOUT):
-    """説明文 → 正規化済み spec。辞書で解ければ AI を呼ばない。
+def spec_from_text(text, runner=None, timeout=DEFAULT_TIMEOUT):
+    """説明文 → 正規化済み spec。**AI が解釈の主役**で、辞書はフォールバック。
 
     戻り値: {"spec": ..., "source": "keywords"|"ai", "parse": 辞書解析の結果,
              "ai_error": AI が失敗したときの理由}
 
-    AI が失敗しても例外にはせず、キーワード解析の結果で続行する
-    (AI が使えない環境でもプラグインが動くようにするため)。
+    キーワード辞書は語彙を列挙する方式なので多様性に限界がある。runner が
+    使える限り常に AI に解釈させ、AI が失敗したとき(オフ設定・CLI 不在・
+    検証落ち)だけ辞書の結果で続行する(AI が使えない環境でも動くようにするため)。
     """
     parsed = parse_text.parse(text)
     result = {"parse": parsed, "ai_error": None}
-
-    if parsed["confidence"] >= min_confidence:
-        result["spec"] = spec_module.normalize_spec(parsed["spec"])
-        result["source"] = "keywords"
-        return result
 
     try:
         answer = request_spec(text, runner=runner, timeout=timeout)

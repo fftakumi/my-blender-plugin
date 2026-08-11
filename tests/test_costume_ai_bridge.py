@@ -95,17 +95,21 @@ def test_request_spec_rejects_aliasing_from_the_ai():
         ai_bridge.request_spec("なにか", runner=lambda prompt: bad)
 
 
-def test_spec_from_text_uses_keywords_and_never_calls_the_ai():
-    def explode(prompt):
-        raise AssertionError("辞書で解けたのに AI を呼んだ")
+def test_spec_from_text_asks_the_ai_even_when_keywords_would_solve_it():
+    """AI が解釈の主役。辞書で解ける文でも AI に読ませる(辞書はフォールバック)"""
+    calls = []
 
-    result = ai_bridge.spec_from_text("紺のプリーツミニスカート", runner=explode)
-    assert result["source"] == "keywords"
-    assert result["ai_error"] is None
-    assert result["parse"]["confidence"] >= 0.55
+    def runner(prompt):
+        calls.append(prompt)
+        return valid_spec_json()
+
+    result = ai_bridge.spec_from_text("紺のプリーツミニスカート", runner=runner)
+    assert result["source"] == "ai"
+    assert result["parse"]["confidence"] >= 0.55  # 辞書でも解けていたのに
+    assert len(calls) == 1
 
 
-def test_spec_from_text_falls_back_to_the_ai_when_keywords_fail():
+def test_spec_from_text_uses_the_ai_for_unknown_garments():
     calls = []
 
     def runner(prompt):
