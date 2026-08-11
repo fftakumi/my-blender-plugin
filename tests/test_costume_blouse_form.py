@@ -403,3 +403,50 @@ def test_a_sleeve_without_a_cuff_band_fails():
     )
     entry = gates(built, normalized, "Blouse_Sleeve_L")
     assert "cuff_band_exists" in entry["failed"]
+
+
+def test_shirttail_drops_at_front_and_back():
+    """定義 #16: 裾は脇がいちばん高く、前後の中心が下がる"""
+    normalized, built = build_blouse()
+    entry = gates(built, normalized, "Blouse_Bodice")
+    assert entry["measured_shirttail_drop"] > entry["measured_shirttail_front_drop"]
+    assert entry["measured_shirttail_front_drop"] > validate.SHIRTTAIL_MIN_DROP
+
+
+def test_garment_length_is_measured_to_the_lowest_hem_point():
+    """裾がカーブしても着丈は製品実寸のまま(いちばん下が着丈)"""
+    normalized, built = build_blouse()
+    entry = gates(built, normalized, "Blouse_Bodice")
+    assert entry["measured_garment_length"] == pytest.approx(0.65, rel=0.05)
+
+
+def test_a_horizontal_hem_fails_the_shirttail_gate():
+    """水平に切った裾は落ちること。設計値が 0 でもゲートは消えない"""
+    normalized, built = build_blouse({"Blouse_Bodice": {"shirttail_drop": 0.0}})
+    entry = gates(built, normalized, "Blouse_Bodice")
+    assert "shirttail_is_curved" in entry["failed"]
+
+
+def test_the_hem_perimeter_is_compared_in_the_horizontal_plane():
+    """裾がカーブすると実周長は上下動ぶん伸びる。太さの比較は水平投影で行う"""
+    normalized, built = build_blouse()
+    bodice = part_named(built, "Blouse_Bodice")
+    assert bodice.design["bottom_perimeter_projected"] is True
+    hem = validate.ring_metrics(bodice.verts, bodice.rings["bottom"])
+    assert hem["perimeter"] > hem["perimeter_xy"]
+    assert hem["perimeter_xy"] == pytest.approx(
+        bodice.design["bottom_perimeter"], rel=validate.DIM_TOL
+    )
+
+
+def test_a_flat_ring_has_the_same_length_in_both_measures():
+    """水平なリングでは実周長と水平投影が一致する(スカートに影響しない)"""
+    _normalized, built = build_blouse()
+    skirt = None
+    from my_blender_plugin.costume import spec as spec_module
+
+    normalized = spec_module.load_preset("skirt_flare")
+    skirt_built = parts.build_all(normalized)
+    skirt = next(m for m in skirt_built["parts"] if m.name == "Skirt_Body")
+    hem = validate.ring_metrics(skirt.verts, skirt.rings["bottom"])
+    assert hem["perimeter_xy"] == pytest.approx(hem["perimeter"], rel=1e-12)

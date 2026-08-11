@@ -53,6 +53,8 @@ BUTTON_THICKNESS_RATIO = 0.20
 BUTTON_THICKNESS_TOL = 0.40
 #: 穴の最少数。シャツは4つ穴が標準、2つ穴もある。0 は「ボタンではない何か」
 BUTTON_MIN_HOLES = 2
+#: 裾のシャツテールの最小の落差(m)。これを下回ると「水平に切った裾」と区別できない
+SHIRTTAIL_MIN_DROP = 0.01
 
 
 # ------------------------------------------------------------------ 小物
@@ -446,6 +448,16 @@ def ring_metrics(verts, ring_indices):
         "radius_max": max(radii),
         # 実周長。断面が楕円でもプリーツが入っていてもそのまま辿った長さ
         "perimeter": loop_length,
+        # 水平に投影した周長。裾がカーブしている(シャツテール)と実周長は
+        # 上下動のぶん伸びるが、「胴まわりの太さ」として比べたいのはこちら。
+        # 水平なリングでは両者は一致するので、平らな裾のパーツには影響しない
+        "perimeter_xy": sum(
+            math.hypot(
+                points[index][0] - points[index - 1][0],
+                points[index][1] - points[index - 1][1],
+            )
+            for index in range(count)
+        ),
         "breadth": max(point[0] for point in points) - min(point[0] for point in points),
         "depth": max(point[1] for point in points) - min(point[1] for point in points),
         "_radii": radii,
@@ -633,10 +645,12 @@ def part_report(mesh, height_units):
     # 上端はプリーツのテーパーが必ず 0 なので、実周長をサイズ表の寸法と直接比べられる
     if top is not None and design.get("top_perimeter"):
         hard["top_perimeter"] = _within(top["perimeter"], design["top_perimeter"], DIM_TOL)
-    # 裾はプリーツが入ると布の長さが増えるので、独立に検算できるときだけ比べる
+    # 裾はプリーツが入ると布の長さが増えるので、独立に検算できるときだけ比べる。
+    # 裾がカーブしているパーツ(シャツテール)は水平に投影した周長で比べる
     if bottom is not None and design.get("bottom_perimeter"):
+        key = "perimeter_xy" if design.get("bottom_perimeter_projected") else "perimeter"
         hard["bottom_perimeter"] = _within(
-            bottom["perimeter"], design["bottom_perimeter"], DIM_TOL
+            bottom[key], design["bottom_perimeter"], DIM_TOL
         )
     if design.get("length"):
         hard["length"] = _within(extent, design["length"], DIM_TOL)
@@ -707,6 +721,21 @@ def part_report(mesh, height_units):
                 > report["measured_back_neck_drop"] + 1e-6,
                 (report["measured_front_neck_drop"], report["measured_back_neck_drop"]),
                 "前 > 後ろ",
+            )
+        # 定義 #16。「裾が水平」は裾を測っても検出できないので、
+        # 前下がりと同じく**常に**判定する(設計値の有無で分岐しない)
+        if "shirttail_drop" in design and report["measured_shirttail_drop"] is not None:
+            hard["shirttail"] = _within(
+                report["measured_shirttail_drop"], design["shirttail_drop"], 0.25
+            )
+            hard["shirttail_is_curved"] = _check(
+                report["measured_shirttail_drop"] > SHIRTTAIL_MIN_DROP
+                and report["measured_shirttail_front_drop"] > SHIRTTAIL_MIN_DROP,
+                (
+                    report["measured_shirttail_drop"],
+                    report["measured_shirttail_front_drop"],
+                ),
+                "前後とも脇より %.3f 以上下がる" % SHIRTTAIL_MIN_DROP,
             )
         if (
             design.get("shoulder_slope_degrees")
@@ -968,7 +997,19 @@ def bodice_metrics(mesh, design):
         "measured_back_neck_drop": None,
         "measured_shoulder_slope_degrees": None,
         "measured_garment_length": None,
+        "measured_shirttail_drop": None,
+        "measured_shirttail_front_drop": None,
     }
+
+    # 定義 #16: 裾は脇がいちばん高く、前後の中心が下がる
+    hem = mesh.rings.get("bottom")
+    if hem:
+        points = [mesh.verts[index] for index in hem]
+        side = max(points, key=lambda point: abs(point[0]))
+        front = min(points, key=lambda point: point[1])
+        back = max(points, key=lambda point: point[1])
+        result["measured_shirttail_drop"] = side[2] - back[2]
+        result["measured_shirttail_front_drop"] = side[2] - front[2]
 
     shoulder = mesh.rings.get("shoulder")
     if shoulder:

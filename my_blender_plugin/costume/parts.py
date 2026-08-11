@@ -273,10 +273,20 @@ def build_bodice(part, table, scale):
         modulate.neckline_drop(angle, front_drop, back_drop, FRONT_ANGLE) for angle in angles
     ]
 
-    # 着丈(定義 #7): 側頸点から下へ。製品実寸表から取る(勘で置いた hem_z が
-    # クロップ丈の原因だった。経緯は docs/garments.md)
+    # 裾のシャツテール(定義 #16): 脇が高く前後が下がる。水平に切った裾は
+    # 「筒を切った」ようにしか見えない
+    tail_back = params["shirttail_drop"] * height
+    tail_front_ratio = params["shirttail_front_ratio"]
+    tails = [
+        modulate.shirttail_drop(angle, tail_back, tail_front_ratio, FRONT_ANGLE)
+        for angle in angles
+    ]
+
+    # 着丈(定義 #7): 側頸点から**裾の最下点**まで。製品実寸表から取る
+    # (勘で置いた hem_z がクロップ丈の原因だった。経緯は docs/garments.md)。
+    # シャツテールのぶん脇の裾を持ち上げて、いちばん下が着丈になるようにする
     garment_length = table["garment_length"] * params["length_scale"]
-    hem_z = snp_z - garment_length
+    hem_z = snp_z - garment_length + max(tails)
     if hem_z >= shoulder_z:
         raise PartError(
             "着丈(%.3fm)が短すぎて裾が肩線より上に来ます" % (garment_length,)
@@ -289,9 +299,14 @@ def build_bodice(part, table, scale):
 
     # 襟ぐりの落差は下へ行くほど消える(でないと裾までうねる)
     fade_span = max(1e-6, params["neck_fade"] * height)
+    # シャツテールは逆に、裾に近づくほど効く
+    tail_span = max(1e-6, params["shirttail_fade"] * height)
 
     def fade(z_base):
         return 1.0 - modulate.smoothstep(min(1.0, (shoulder_z - z_base) / fade_span))
+
+    def tail_fade(z_base):
+        return 1.0 - modulate.smoothstep(min(1.0, (z_base - hem_z) / tail_span))
 
     def body_semi(t):
         """軸方向 t での長半径と断面の厚み比。肩 → バスト → ウエスト → 裾"""
@@ -332,10 +347,16 @@ def build_bodice(part, table, scale):
         semi, depth = body_semi(t)
         base = shoulder_z - t * span
         weight = fade(base)
+        tail_weight = tail_fade(base)
         rows.append(
             (
-                [base - drop * weight for drop in drops],
-                base - front_drop * weight,
+                [
+                    base - drop * weight - tail * tail_weight
+                    for drop, tail in zip(drops, tails)
+                ],
+                base
+                - front_drop * weight
+                - tail_back * tail_front_ratio * tail_weight,
                 semi,
                 depth,
             )
@@ -376,6 +397,9 @@ def build_bodice(part, table, scale):
         "top_perimeter": None,
         "bottom_perimeter": table["bust"] * params["hem_scale"] * scale,
         "bottom_fit_perimeter": table["bust"] * params["hem_scale"] * scale,
+        # 裾がカーブしているので、実周長は上下動のぶん伸びる。
+        # 「胴まわりの太さ」として比べたいのは水平に投影した周長
+        "bottom_perimeter_projected": True,
         "bottom_perimeter_note": None,
         "top_z": snp_z * scale,
         "bottom_z": hem_z * scale,
@@ -403,6 +427,9 @@ def build_bodice(part, table, scale):
         "back_neck_drop": table["back_neck_drop"] * scale,
         "built_front_neck_drop": front_drop * scale,
         "shoulder_slope_degrees": table["shoulder_slope_degrees"],
+        # --- 定義 #16(裾のシャツテール) ---
+        "shirttail_drop": tail_back * scale,
+        "shirttail_front_ratio": tail_front_ratio,
         # 前立てとボタンが乗る前中心の面。(z, 前面の y) を上から下へ
         "front_profile": [
             (front_z * scale, -semi * depth * scale)

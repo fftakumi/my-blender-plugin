@@ -335,6 +335,20 @@ def neckline_drop(angle, front_drop, back_drop, front_angle):
     return front_drop * max(0.0, phase) + back_drop * max(0.0, -phase)
 
 
+def shirttail_drop(angle, back_drop, front_ratio, front_angle):
+    """裾のシャツテール。**脇でいちばん高く、前後の中心が下がる**(定義 #16)。
+
+    襟ぐりの前下がり(`neckline_drop`)と同じ形の落差だが、こちらは裾。
+    水平に切った裾は「筒を切った」ようにしか見えず、シャツにもブラウスにも見えない。
+    実物は前後が長く脇が短い曲線で、後ろのほうが前より少し長い。
+    """
+    if back_drop < 0.0:
+        raise ValueError("back_drop は 0 以上にしてください: %r" % (back_drop,))
+    if not 0.0 <= front_ratio <= 1.5:
+        raise ValueError("front_ratio は 0〜1.5 にしてください: %r" % (front_ratio,))
+    return neckline_drop(angle, back_drop * front_ratio, back_drop, front_angle)
+
+
 def button_hole_segments(segments, holes):
     """ボタンの穴を開ける分割番号(定義 #15)。
 
