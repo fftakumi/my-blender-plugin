@@ -61,9 +61,11 @@ _BODICE = {
     "segments": (int, 28, 8, 256),
     "rings": (int, 9, 3, 128),
     "bust_t": (float, 0.35, 0.0, 1.0),  # バストが来る軸方向の位置
-    "shoulder_scale": (float, 0.80, 0.3, 1.5),  # 肩の周長 / バスト
-    "hem_scale": (float, 0.94, 0.3, 2.0),  # 裾の周長 / バスト
-    "armhole_rings": (int, 3, 1, 32),  # 袖ぐりが占める軸方向のリング数
+    "hem_scale": (float, 0.96, 0.3, 2.0),  # 裾の周長 / バスト
+    "neck_ease": (float, 0.12, 0.0, 1.0),  # 襟ぐりのゆとり(首回りに対する比)
+    "neck_depth_ratio": (float, 0.85, 0.2, 1.0),
+    "shoulder_depth_ratio": (float, 0.55, 0.2, 1.0),  # 肩線の断面 前後/左右
+    "shoulder_slope": (float, 0.014, 0.0, 0.1),  # 襟ぐりが肩より高い量 /H(製図の肩下がり)
     "armhole_segments": (int, 3, 1, 32),  # 袖ぐりが占める周方向の分割数
 }
 

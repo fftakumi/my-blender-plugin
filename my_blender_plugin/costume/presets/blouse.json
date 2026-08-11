@@ -23,14 +23,16 @@
       "material": "main",
       "params": {
         "shoulder_z": 0.82,
-        "hem_z": 0.585,
+        "hem_z": 0.575,
         "segments": 28,
         "rings": 9,
-        "bust_t": 0.35,
-        "shoulder_scale": 0.8,
-        "hem_scale": 0.94,
-        "armhole_rings": 3,
-        "armhole_segments": 4
+        "bust_t": 0.4,
+        "hem_scale": 0.96,
+        "neck_ease": 0.12,
+        "neck_depth_ratio": 0.85,
+        "shoulder_depth_ratio": 0.55,
+        "shoulder_slope": 0.014,
+        "armhole_segments": 3
       }
     },
     {

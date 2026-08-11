@@ -644,6 +644,28 @@ def part_report(mesh, height_units):
                 (pleat_frequency, pleat_amplitude),
                 "< %.4f" % PLEAT_AMPLITUDE_NOISE,
             )
+    # ---- ブラウスの定義(docs/garments.md)を検証項目にしたもの ----
+    if design.get("shoulder_width"):
+        report.update(bodice_metrics(mesh, design))
+        hard["shoulder_width"] = _within(
+            report["measured_shoulder_width"], design["shoulder_width"], DIM_TOL
+        )
+        hard["neck_opening"] = _within(
+            report["measured_neck_perimeter"], design["neck_perimeter"], 0.05
+        )
+        if report["measured_armhole_depth"] is not None:
+            hard["armhole_depth"] = _within(
+                report["measured_armhole_depth"], design["armhole_depth"], 0.15
+            )
+        if report["measured_shoulder_span"] is not None:
+            hard["shoulder_exists"] = _within(
+                report["measured_shoulder_span"], design["shoulder_span"], 0.25
+            )
+        if report["armhole_on_side"] is not None:
+            hard["armhole_on_side"] = _check(
+                report["armhole_on_side"], report["armhole_centres"], "体側にある"
+            )
+
     # 折り目がウエストバンドの直下から裾まで続いているか(docs/garments.md 定義 #1・#2)。
     # 「腰では畳まれている」を「腰では折り目が無い」と実装すると上半分が滑らかな筒になり、
     # 数値も目視も通らないのにプリーツスカートに見えない、という状態になる。
@@ -777,6 +799,64 @@ def seam_distance(mesh_a, ring_a, mesh_b, ring_b):
     for point in points_a:
         worst = max(worst, min(_distance(point, other) for other in points_b))
     return worst
+
+
+def bodice_metrics(mesh, design):
+    """ブラウスの胴について、定義 #1〜#5 を測る。
+
+    設計値との突き合わせは part_report がやる。ここは**実物から測るだけ**。
+    """
+    loops = armhole_loops(mesh)
+    result = {
+        "measured_shoulder_width": None,
+        "measured_neck_perimeter": None,
+        "measured_armhole_depth": None,
+        "measured_shoulder_span": None,
+        "armhole_on_side": None,
+        "armhole_centres": {},
+    }
+
+    shoulder = mesh.rings.get("shoulder")
+    if shoulder:
+        xs = [mesh.verts[index][0] for index in shoulder]
+        result["measured_shoulder_width"] = max(xs) - min(xs)
+
+    # 襟ぐり = 外周のうち一番高いところにある部分…ではなく、上端リングそのもの
+    top = mesh.rings.get("top")
+    if top:
+        points = [mesh.verts[index] for index in top]
+        result["measured_neck_perimeter"] = sum(
+            _distance(points[index], points[index - 1]) for index in range(1, len(points))
+        ) + _distance(points[0], points[-1])
+
+    if loops and shoulder:
+        shoulder_z = max(mesh.verts[index][2] for index in shoulder)
+        depths, spans, on_side = [], [], []
+        neck_points = [mesh.verts[index] for index in (top or [])]
+        for label, loop in loops.items():
+            indices = loop["indices"]
+            lowest = min(mesh.verts[index][2] for index in indices)
+            depths.append(shoulder_z - lowest)
+            centre = loop["center"]
+            result["armhole_centres"][label] = [round(value, 5) for value in centre]
+            half_width = (result["measured_shoulder_width"] or 0.0) / 2.0
+            on_side.append(abs(centre[0]) > half_width * 0.5 and abs(centre[1]) < abs(centre[0]))
+            if neck_points:
+                # 肩の渡り幅 = 襟ぐりの輪と袖ぐりの輪の最短距離(定義 #1)
+                spans.append(
+                    min(
+                        _distance(mesh.verts[index], point)
+                        for index in indices
+                        for point in neck_points
+                    )
+                )
+        if depths:
+            result["measured_armhole_depth"] = sum(depths) / len(depths)
+        if spans:
+            result["measured_shoulder_span"] = sum(spans) / len(spans)
+        if on_side:
+            result["armhole_on_side"] = all(on_side)
+    return result
 
 
 def costume_report(built, normalized_spec):

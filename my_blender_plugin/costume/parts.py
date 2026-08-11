@@ -213,90 +213,117 @@ def _side_segment(angles, target):
 
 
 def build_bodice(part, table, scale):
-    """ブラウスの胴。肩から裾までの開いた筒に、袖ぐりの穴を2つ開ける"""
+    """ブラウスの胴。**首の穴と肩線を別のリングにする**のが要点(定義 #1)。
+
+        リング0: 襟ぐり(小さい・肩より少し高い)  ← 上端の境界がそのまま襟ぐりになる
+        リング1: 肩線(長半径 = 肩幅/2)           ← 0→1 の帯が肩ヨーク
+        リング2..: バスト → 裾                    ← 1→2 以降に袖ぐりの穴を開ける
+
+    前の版は上端を1本にしたので、そのリングが襟ぐりと肩線を兼ねてしまい肩が作れなかった。
+    新しいカーネルは要らず、リングの並べ方だけの問題だった。
+    """
     params = part["params"]
     height = table["height"]
     shoulder_z = params["shoulder_z"] * height
     hem_z = params["hem_z"] * height
     if hem_z >= shoulder_z:
         raise PartError(
-            "hem_z(%.3f) は shoulder_z(%.3f) より下にしてください" % (params["hem_z"], params["shoulder_z"])
+            "hem_z(%.3f) は shoulder_z(%.3f) より下にしてください"
+            % (params["hem_z"], params["shoulder_z"])
         )
-    span = shoulder_z - hem_z
 
-    segments, rings = params["segments"], params["rings"]
+    segments = params["segments"]
+    body_rings = params["rings"]
     angles = _front_open_angles(segments)
-    ts = modulate.axis_fractions(rings)
+    body_depth = table["depth_ratio"]
 
-    # 周長: 肩(バスト寸法まで届かない)→ バスト → 裾。ウエストの絞りを掛ける
-    bust = table["bust"]
-    hem_perimeter = bust * params["hem_scale"]
-    shoulder_perimeter = bust * params["shoulder_scale"]
+    # 襟ぐり: 首回り + ゆとり。肩より少し高い位置に置く(肩の下がりぶん)
+    neck_perimeter = table["neck"] * (1.0 + params["neck_ease"])
+    neck_semi = modulate.ellipse_semi_major(neck_perimeter, params["neck_depth_ratio"])
+    neck_z = shoulder_z + params["shoulder_slope"] * height
+
+    # 肩線: 長半径がそのまま肩幅の半分(定義 #3 をここで満たす)
+    shoulder_semi = table["shoulder_width"] / 2.0
+
+    # 胴: 肩の下でバストへ、そこから裾へ
+    bust_semi = modulate.ellipse_semi_major(table["bust"], body_depth)
+    hem_semi = modulate.ellipse_semi_major(table["bust"] * params["hem_scale"], body_depth)
+    span = shoulder_z - hem_z
+    spacing = span / (body_rings - 1)
     bust_t = max(0.0, min(1.0, params["bust_t"]))
-    perimeters = []
-    for t in ts:
+
+    rows = [(neck_z, neck_semi, params["neck_depth_ratio"])]
+    rows.append((shoulder_z, shoulder_semi, params["shoulder_depth_ratio"]))
+    for index in range(1, body_rings):
+        t = index / (body_rings - 1)
         if t <= bust_t and bust_t > 0.0:
             local = modulate.smoothstep(t / bust_t)
-            perimeters.append(shoulder_perimeter + (bust - shoulder_perimeter) * local)
+            semi = shoulder_semi + (bust_semi - shoulder_semi) * local
+            depth = params["shoulder_depth_ratio"] + (
+                body_depth - params["shoulder_depth_ratio"]
+            ) * local
         else:
             local = 0.0 if bust_t >= 1.0 else (t - bust_t) / (1.0 - bust_t)
-            perimeters.append(bust + (hem_perimeter - bust) * modulate.smoothstep(local))
+            semi = bust_semi + (hem_semi - bust_semi) * modulate.smoothstep(local)
+            depth = body_depth
+        rows.append((shoulder_z - t * span, semi, depth))
 
-    depth_ratio = table["depth_ratio"]
-    ring_points = []
-    for t, perimeter in zip(ts, perimeters):
-        semi_major = modulate.ellipse_semi_major(perimeter, depth_ratio)
-        ring_points.append(
-            kernels.ring_from_polar(
-                [semi_major * scale] * segments,
-                angles,
-                (shoulder_z - t * span) * scale,
-                depth_ratio=depth_ratio,
-            )
+    ring_points = [
+        kernels.ring_from_polar(
+            [semi * scale] * segments, angles, z * scale, depth_ratio=depth
         )
+        for z, semi, depth in rows
+    ]
 
-    # 袖ぐり: 左右の側面に矩形の穴。ring 0 は肩として必ず残す
-    armhole_rings = max(1, min(params["armhole_rings"], rings - 2))
+    # 袖ぐり: 肩線の直下(リング1と2の間)から、袖ぐり深さのところまで(定義 #4)
+    armhole_depth = table["armhole_depth"]
+    armhole_rows = max(1, min(int(round(armhole_depth / spacing)), body_rings - 2))
     armhole_segments = max(1, params["armhole_segments"])
     skip = set()
     centres = {}
     for label, target in (("l", 0.0), ("r", math.pi)):
         centre = _side_segment(angles, target)
         centres[label] = centre
-        for ring in range(1, 1 + armhole_rings):
-            for offset in range(-(armhole_segments // 2), armhole_segments - armhole_segments // 2):
-                skip.add((ring, (centre + offset) % segments))
+        for row in range(1, 1 + armhole_rows):
+            for offset in range(
+                -(armhole_segments // 2), armhole_segments - armhole_segments // 2
+            ):
+                skip.add((row, (centre + offset) % segments))
 
     mesh = kernels.loft_rings(
         ring_points, name=part["name"], closed=False, tubular=True, skip_faces=skip
     )
     mesh.material = part["material"]
     mesh.design = {
-        "top_perimeter": shoulder_perimeter * scale,
-        "bottom_perimeter": hem_perimeter * scale,
-        "bottom_fit_perimeter": hem_perimeter * scale,
+        "top_perimeter": neck_perimeter * scale,
+        "bottom_perimeter": table["bust"] * params["hem_scale"] * scale,
+        "bottom_fit_perimeter": table["bust"] * params["hem_scale"] * scale,
         "bottom_perimeter_note": None,
-        "top_z": shoulder_z * scale,
+        "top_z": neck_z * scale,
         "bottom_z": hem_z * scale,
-        "length": span * scale,
-        "depth_ratio_top": depth_ratio,
-        "depth_ratio_bottom": depth_ratio,
+        "length": None,  # 襟ぐりが肩より上にあるので z 幅と着丈は一致しない
+        "depth_ratio_top": params["neck_depth_ratio"],
+        "depth_ratio_bottom": body_depth,
         "radial_modulations": [],
         "pleats": 0,
         "pleat_depth": 0.0,
-        # 前が開いた筒 = 外周が1本の輪、それに袖ぐり2つ
-        "boundary_loops": 3,
+        "boundary_loops": 3,  # 外周(襟ぐり+前開き+裾)1本 + 袖ぐり2本
         "boundary_verts": None,
-        "armhole_sides": sorted(centres),
-        "bust_perimeter": bust * scale,
+        # --- 定義 #1〜#6 を検証するための設計値 ---
+        "neck_perimeter": neck_perimeter * scale,
+        "shoulder_width": table["shoulder_width"] * scale,
+        "shoulder_z": shoulder_z * scale,
+        "armhole_depth": armhole_depth * scale,
+        "shoulder_span": (table["shoulder_width"] / 2.0 - neck_semi) * scale,
+        "sleeve_length": table["sleeve_length"] * scale,
     }
-    # 袖はこの穴の実寸から作るので、穴の位置と大きさを渡す
     mesh.design["armholes"] = _armhole_frames(ring_points, centres, segments, skip)
-    # 袖ぐりの境界リングを名前つきで登録する(袖との縫い合わせ、交差検査の除外に使う)
     from . import validate as validate_module
 
     for label, loop in validate_module.armhole_loops(mesh).items():
         mesh.rings["armhole_" + label] = loop["indices"]
+    # 肩線リングは定義 #3 の検証に使う
+    mesh.rings["shoulder"] = list(range(segments, 2 * segments))
     return mesh
 
 
