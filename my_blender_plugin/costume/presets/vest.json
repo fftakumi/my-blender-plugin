@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "name": "vest",
+  "assumed_height": 1.58,
+  "ease": 0.12,
+  "meters_per_unit": 1.0,
+  "poly_budget": 4000,
+  "materials": {
+    "main": {
+      "base_color": [
+        0.25,
+        0.22,
+        0.2
+      ],
+      "roughness": 0.8,
+      "sheen": 0.18
+    },
+    "trim": {
+      "base_color": [
+        0.15,
+        0.13,
+        0.12
+      ],
+      "roughness": 0.42,
+      "sheen": 0.1
+    }
+  },
+  "parts": [
+    {
+      "type": "bodice",
+      "name": "Vest_Bodice",
+      "material": "main",
+      "params": {
+        "shoulder_z": 0.82,
+        "length_scale": 1.0,
+        "segments": 28,
+        "rings": 12,
+        "bust_t": 0.28,
+        "waist_t": 0.62,
+        "waist_scale": 0.93,
+        "hem_scale": 0.99,
+        "neck_ease": 0.12,
+        "neck_depth_ratio": 0.85,
+        "shoulder_depth_ratio": 0.55,
+        "neck_drop_scale": 1.0,
+        "neck_fade": 0.09,
+        "armhole_segments": 2
+      }
+    },
+    {
+      "type": "collar",
+      "name": "Vest_Collar",
+      "material": "main",
+      "attach_to": "Vest_Bodice",
+      "params": {
+        "height_ratio": 0.022,
+        "rings": 3,
+        "flare": 1.06
+      }
+    },
+    {
+      "type": "collar_fall",
+      "name": "Vest_Collar_Fall",
+      "material": "main",
+      "attach_to": "Vest_Collar",
+      "params": {
+        "height_ratio": 0.033,
+        "rings": 4,
+        "flare": 1.5
+      }
+    },
+    {
+      "type": "placket",
+      "name": "Vest_Placket",
+      "material": "main",
+      "attach_to": "Vest_Bodice",
+      "params": {
+        "width": 0.019,
+        "standoff": 0.0016,
+        "bulge": 0.18,
+        "columns": 5
+      }
+    },
+    {
+      "type": "buttons",
+      "name": "Vest_Buttons",
+      "material": "trim",
+      "attach_to": "Vest_Placket",
+      "params": {
+        "count": 5,
+        "radius": 0.00364,
+        "segments": 16,
+        "standoff": 0.0004,
+        "top_inset": 0.06,
+        "bottom_inset": 0.1,
+        "thickness_ratio": 0.2,
+        "dish": 0.35,
+        "holes": 4
+      }
+    }
+  ],
+  "joints": [
+    {
+      "a": "Vest_Bodice",
+      "a_ring": "top",
+      "b": "Vest_Collar",
+      "b_ring": "bottom",
+      "kind": "shared"
+    }
+  ]
+}
