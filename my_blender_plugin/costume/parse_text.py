@@ -103,6 +103,7 @@ GARMENT_PRESETS = {
     "vest": "vest",
     "cape": "cape",
     "hood": "hooded_cape",
+    "dress": "onepiece",
 }
 
 #: 衣装の種類の見出し語。値は GARMENT_PRESETS のキー。
@@ -117,6 +118,7 @@ GARMENT_WORDS = {
     # 並び順で返すので、「フード付きのマント」はフード付きの側(hooded_cape)が勝つ
     "フード": "hood", "hood": "hood", "hoodie": "hood", "パーカー": "hood",
     "ケープ": "cape", "cape": "cape", "マント": "cape", "ポンチョ": "cape",
+    "ワンピース": "dress", "onepiece": "dress", "ドレス": "dress", "dress": "dress",
 }
 
 #: 「24本プリーツ」「プリーツ32」などから山数を拾う

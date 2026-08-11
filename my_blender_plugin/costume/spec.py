@@ -89,6 +89,10 @@ _BODICE = {
     "neck_fade": (float, 0.09, 0.01, 0.5),  # 前下がりが消えるまでの垂直距離 /H
     # 前開きの隙間の幅 /H。0.006 = 0.95cm。前立て(3.0cm)より細くすること
     "front_gap": (float, 0.006, 0.0005, 0.06),
+    # 裾の形。shirttail = 脇が高く前後が下がるシャツの裾(ブラウス)。
+    # flat = 水平な裾(ワンピースの胴のようにスカートを縫い付ける場合)。
+    # flat のときは design からシャツテールのキーが消え、裾ゲートは発火しない
+    "hem_style": (str, "shirttail", None, None),
     # 胸のふくらみ。**設計値**(製品実寸表にも製図資料にも「前へ何cm出るか」は無い)。
     # 0.022 = 3.5cm 相当。0 にすると楕円断面だけの胴 = メンズシャツに見える
     "bust_projection": (float, 0.022, 0.0, 0.12),
@@ -258,7 +262,7 @@ def default_spec(name="skirt_flare"):
 
 
 #: 文字列で選択肢が決まっているフィールド
-_ENUM_FIELDS = {"side": ("l", "r")}
+_ENUM_FIELDS = {"side": ("l", "r"), "hem_style": ("shirttail", "flat")}
 
 
 def _coerce(value, field, schema, where, errors):

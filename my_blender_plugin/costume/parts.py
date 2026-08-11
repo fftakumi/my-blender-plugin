@@ -454,8 +454,11 @@ def build_bodice(part, table, scale):
     ]
 
     # 裾のシャツテール(定義 #16): 脇が高く前後が下がる。水平に切った裾は
-    # 「筒を切った」ようにしか見えない
-    tail_back = params["shirttail_drop"] * height
+    # 「筒を切った」ようにしか見えない。**ただしワンピースの胴のように裾に
+    # スカートを縫い付ける場合は水平が正しい**(hem_style="flat")。
+    # flat では design からシャツテールのキーを落とし、裾ゲートを発火させない
+    flat_hem = params["hem_style"] == "flat"
+    tail_back = 0.0 if flat_hem else params["shirttail_drop"] * height
     tail_front_ratio = params["shirttail_front_ratio"]
     tails = [
         modulate.shirttail_drop(angle, tail_back, tail_front_ratio, FRONT_ANGLE)
@@ -631,9 +634,6 @@ def build_bodice(part, table, scale):
         "back_neck_drop": table["back_neck_drop"] * scale,
         "built_front_neck_drop": front_drop * scale,
         "shoulder_slope_degrees": table["shoulder_slope_degrees"],
-        # --- 定義 #16(裾のシャツテール) ---
-        "shirttail_drop": tail_back * scale,
-        "shirttail_front_ratio": tail_front_ratio,
         # 前立てとボタンが乗る前中心の面。(z, 前面の y) を上から下へ
         "front_profile": front_profile,
         # --- 定義 #18(胸のふくらみ) ---
@@ -649,6 +649,11 @@ def build_bodice(part, table, scale):
         )
         * scale,
     }
+    if not flat_hem:
+        # --- 定義 #16(裾のシャツテール) --- キーの有無がゲートのスイッチ。
+        # shirttail の胴だけが「裾が曲がっていること」を検査される
+        mesh.design["shirttail_drop"] = tail_back * scale
+        mesh.design["shirttail_front_ratio"] = tail_front_ratio
     mesh.design["armholes"] = _armhole_frames(ring_points, centres, segments, skip)
     from . import validate as validate_module
 
