@@ -20,6 +20,7 @@ _MODULE_NAMES = (
     "modulate",
     "kernels",
     "validate",
+    "silhouette",
     "parts",
     "palette",
     "parse_text",
