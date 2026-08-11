@@ -36,6 +36,9 @@ class PartMesh:
     #: 折り目として陰影を割るべき分割位置(プリーツの折り線)。
     #: スムーズシェーディングだけだと浅い折り目がぼやけて「プレスした折り目」に見えない
     sharp_segments: list = field(default_factory=list)
+    #: 面を抜いて穴(袖ぐり)を開けたか。開けると頂点を詰め直すので
+    #: 「リング番号 × 分割数」で頂点を引く計算が使えなくなる
+    holed: bool = False
 
     def edge_kinds(self):
         """辺を用途で分類して {("ring"|"axial"): [(a, b), ...]} を返す。
@@ -69,12 +72,66 @@ def _ring_arc_lengths(points, closed):
     return lengths
 
 
-def loft_rings(ring_points, name="Part", closed=True, tubular=True, axis_center=(0.0, 0.0)):
+def orthonormal_frame(direction):
+    """筒を伸ばす向きから、リングを張る平面の2軸 (right, up) を返す。
+
+    `cross(right, up) == -direction` になるように選ぶ。loft_rings は
+    「反時計回りのリングを積む向きの逆」に面法線が向くので、この関係を守れば
+    どの向きの筒でも法線が外を向く。
+    """
+    length = math.sqrt(sum(value * value for value in direction))
+    if length == 0.0:
+        raise ValueError("direction が零ベクトルです")
+    forward = tuple(value / length for value in direction)
+    # direction と平行でない軸を選んで右手系を作る
+    helper = (0.0, 0.0, 1.0) if abs(forward[2]) < 0.9 else (1.0, 0.0, 0.0)
+    right = (
+        helper[1] * forward[2] - helper[2] * forward[1],
+        helper[2] * forward[0] - helper[0] * forward[2],
+        helper[0] * forward[1] - helper[1] * forward[0],
+    )
+    scale = math.sqrt(sum(value * value for value in right))
+    right = tuple(value / scale for value in right)
+    backward = tuple(-value for value in forward)
+    up = (
+        backward[1] * right[2] - backward[2] * right[1],
+        backward[2] * right[0] - backward[0] * right[2],
+        backward[0] * right[1] - backward[1] * right[0],
+    )
+    return right, up
+
+
+def ring_on_frame(radii, angles, origin, right, up, depth_ratio=1.0):
+    """任意の平面(origin, right, up)上にリング1本を張る。袖のような斜めの筒に使う"""
+    if len(radii) != len(angles):
+        raise ValueError("radii(%d) と angles(%d) の個数が違います" % (len(radii), len(angles)))
+    if depth_ratio <= 0.0:
+        raise ValueError("depth_ratio は正の数にしてください: %r" % (depth_ratio,))
+    points = []
+    for radius, angle in zip(radii, angles):
+        u = radius * math.cos(angle)
+        v = radius * depth_ratio * math.sin(angle)
+        points.append(
+            tuple(origin[axis] + right[axis] * u + up[axis] * v for axis in range(3))
+        )
+    return points
+
+
+def loft_rings(
+    ring_points,
+    name="Part",
+    closed=True,
+    tubular=True,
+    axis_center=(0.0, 0.0),
+    skip_faces=(),
+):
     """リング列を積んで四角メッシュにする。
 
     ring_points: 上から下へ並べたリングのリスト。各リングは同じ頂点数の
                  [(x, y, z), ...]。頂点は +Z から見て反時計回りに並べる。
     closed:      リングが周方向に閉じるか(筒なら True、シートなら False)。
+    skip_faces:  作らない面の (リング番号, 分割番号) の集合。**袖ぐりのような穴**を
+                 これで開ける。格子から矩形の面群を抜くと、境界がきれいな四角の輪になる。
 
     面の巻き方向は (上[j], 下[j], 下[j+1], 上[j+1])。反時計回りに並べたリングを
     上から下へ積むと、この順で面法線が軸から外を向く。
@@ -95,29 +152,46 @@ def loft_rings(ring_points, name="Part", closed=True, tubular=True, axis_center=
 
     ring_count = len(ring_points)
     span = ring_size if closed else ring_size - 1
+    skip = set(tuple(item) for item in skip_faces)
     quads = []
+    uv_all = _analytic_uv(ring_points, closed, span, ring_size)
+    uv_loops = []
     for upper in range(ring_count - 1):
         top_base = upper * ring_size
         bottom_base = (upper + 1) * ring_size
         for j in range(span):
+            if (upper, j) in skip:
+                continue
             j2 = (j + 1) % ring_size
             quads.append((top_base + j, bottom_base + j, bottom_base + j2, top_base + j2))
+            uv_loops.append(uv_all[upper * span + j])
 
-    uv_loops = _analytic_uv(ring_points, closed, span, ring_size)
+    # 穴を開けると参照されない頂点が残る。孤立頂点は検証で不合格になるので詰め直す
+    if skip:
+        used = sorted({index for quad in quads for index in quad})
+        remap = {old: new for new, old in enumerate(used)}
+        verts = [verts[index] for index in used]
+        quads = [tuple(remap[index] for index in quad) for quad in quads]
+    else:
+        remap = None
+
+    def ring_slice(index):
+        raw = range(index * ring_size, (index + 1) * ring_size)
+        if remap is None:
+            return list(raw)
+        return [remap[value] for value in raw if value in remap]
 
     return PartMesh(
         name=name,
         verts=verts,
         quads=quads,
         uv_loops=uv_loops,
-        rings={
-            "top": list(range(ring_size)),
-            "bottom": list(range((ring_count - 1) * ring_size, ring_count * ring_size)),
-        },
+        rings={"top": ring_slice(0), "bottom": ring_slice(ring_count - 1)},
         ring_size=ring_size,
         ring_count=ring_count,
         tubular=tubular,
         axis_center=(float(axis_center[0]), float(axis_center[1])),
+        holed=bool(skip),
     )
 
 

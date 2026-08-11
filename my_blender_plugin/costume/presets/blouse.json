@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "name": "blouse",
+  "assumed_height": 1.58,
+  "ease": 0.06,
+  "meters_per_unit": 1.0,
+  "poly_budget": 4000,
+  "materials": {
+    "main": {
+      "base_color": [
+        0.82,
+        0.82,
+        0.8
+      ],
+      "roughness": 0.76,
+      "sheen": 0.22
+    }
+  },
+  "parts": [
+    {
+      "type": "bodice",
+      "name": "Blouse_Bodice",
+      "material": "main",
+      "params": {
+        "shoulder_z": 0.82,
+        "hem_z": 0.585,
+        "segments": 28,
+        "rings": 9,
+        "bust_t": 0.35,
+        "shoulder_scale": 0.8,
+        "hem_scale": 0.94,
+        "armhole_rings": 3,
+        "armhole_segments": 4
+      }
+    },
+    {
+      "type": "sleeve",
+      "name": "Blouse_Sleeve_L",
+      "material": "main",
+      "attach_to": "Blouse_Bodice",
+      "params": {
+        "side": "l",
+        "segments": 14,
+        "rings": 7,
+        "sleeve_ease": 0.1,
+        "length_scale": 1.0,
+        "cuff_scale": 1.15,
+        "droop_degrees": 14.0,
+        "bicep_scale": 0.78
+      }
+    },
+    {
+      "type": "sleeve",
+      "name": "Blouse_Sleeve_R",
+      "material": "main",
+      "attach_to": "Blouse_Bodice",
+      "params": {
+        "side": "r",
+        "segments": 14,
+        "rings": 7,
+        "sleeve_ease": 0.1,
+        "length_scale": 1.0,
+        "cuff_scale": 1.15,
+        "droop_degrees": 14.0,
+        "bicep_scale": 0.78
+      }
+    },
+    {
+      "type": "collar",
+      "name": "Blouse_Collar",
+      "material": "main",
+      "params": {
+        "base_z": 0.82,
+        "height_ratio": 0.026,
+        "segments": 20,
+        "rings": 3,
+        "flare": 1.08,
+        "depth_ratio": 0.85
+      }
+    }
+  ],
+  "joints": [
+    {
+      "a": "Blouse_Bodice",
+      "a_ring": "armhole_l",
+      "b": "Blouse_Sleeve_L",
+      "b_ring": "top",
+      "kind": "sewn"
+    },
+    {
+      "a": "Blouse_Bodice",
+      "a_ring": "armhole_r",
+      "b": "Blouse_Sleeve_R",
+      "b_ring": "top",
+      "kind": "sewn"
+    }
+  ]
+}

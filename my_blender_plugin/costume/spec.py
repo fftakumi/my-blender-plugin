@@ -54,13 +54,68 @@ _WAISTBAND = {
     "flare": (float, 1.0, 0.5, 2.0),  # 上端に対する下端のフィット周長比
 }
 
+#: ブラウスの胴。前が開いた筒に袖ぐりの穴を2つ開ける(定義は docs/garments.md)
+_BODICE = {
+    "shoulder_z": (float, 0.82, 0.3, 1.0),  # 肩の高さ /H
+    "hem_z": (float, 0.585, 0.1, 0.95),  # 裾の高さ /H(ウエストより少し下)
+    "segments": (int, 28, 8, 256),
+    "rings": (int, 9, 3, 128),
+    "bust_t": (float, 0.35, 0.0, 1.0),  # バストが来る軸方向の位置
+    "shoulder_scale": (float, 0.80, 0.3, 1.5),  # 肩の周長 / バスト
+    "hem_scale": (float, 0.94, 0.3, 2.0),  # 裾の周長 / バスト
+    "armhole_rings": (int, 3, 1, 32),  # 袖ぐりが占める軸方向のリング数
+    "armhole_segments": (int, 3, 1, 32),  # 袖ぐりが占める周方向の分割数
+}
+
+#: 袖。**袖ぐりの実寸から**作るので attach_to が必須
+_SLEEVE = {
+    "side": (str, "l", None, None),  # "l" か "r"
+    "segments": (int, 14, 6, 128),
+    "rings": (int, 7, 2, 128),
+    "sleeve_ease": (float, 0.10, 0.0, 0.5),  # 袖山のいせ込み(縫い目長の検算に使う)
+    # 筒の太さ / 袖ぐり周長。まっすぐな筒は袖山の曲線を持たないので、
+    # 縫い目長そのままだと二の腕が袖ぐりと同じ太さになって円錐に見える(設計値)
+    "bicep_scale": (float, 0.78, 0.3, 1.2),
+    "length_scale": (float, 1.0, 0.05, 1.5),  # 袖丈 / サイズ表の袖丈
+    "cuff_scale": (float, 1.0, 0.3, 3.0),  # 袖口 / サイズ表の袖口
+    "droop_degrees": (float, 8.0, -30.0, 80.0),  # 水平からの下がり角
+}
+
+#: 立ち襟
+_COLLAR = {
+    "base_z": (float, 0.845, 0.3, 1.0),  # 襟の付け根の高さ /H
+    "height_ratio": (float, 0.022, 0.002, 0.15),  # 襟の高さ /H
+    "segments": (int, 20, 6, 128),
+    "rings": (int, 3, 2, 32),
+    "flare": (float, 1.08, 0.8, 2.0),  # 上端 / 下端 の周長比
+    "depth_ratio": (float, 0.85, 0.2, 1.0),
+}
+
 PART_SCHEMAS = {
     "skirt_body": _SKIRT_BODY,
     "waistband": _WAISTBAND,
+    "bodice": _BODICE,
+    "sleeve": _SLEEVE,
+    "collar": _COLLAR,
 }
 
+#: 他のパーツの実寸を必要とするパーツ。spec に attach_to が必須
+DEPENDENT_PART_TYPES = frozenset(("sleeve",))
+
+#: joints で指定できる境界リングの名前
+JOINT_RING_NAMES = frozenset(("top", "bottom", "armhole_l", "armhole_r"))
+
+#: 接合の種類。
+#:   shared … 頂点座標が一致している必要がある(ウエストバンドとスカートのように
+#:            同じ分割数で作ったリングを共有する)
+#:   sewn  … 座標の一致は求めない。**縫い合わせ**なので分割数が違ってよい
+#:            (袖ぐりと袖山。縫製でも袖山にはいせ込みが入って長さが違う)。
+#:            交差の検査からは外す
+JOINT_KINDS = frozenset(("shared", "sewn"))
+
 # パーツごとの「筒状かどうか」。法線の外向き判定を掛けてよいのは筒状パーツだけ。
-TUBULAR_PART_TYPES = frozenset(("skirt_body", "waistband"))
+# 袖は斜めに伸びるので、z 軸まわりの外向き判定は当てられない。
+TUBULAR_PART_TYPES = frozenset(("skirt_body", "waistband", "bodice", "collar"))
 
 _MATERIAL_SCHEMA = {
     "base_color": (list, [0.16, 0.19, 0.35], None, None),  # linear RGB
@@ -106,11 +161,24 @@ def default_spec(name="skirt_flare"):
 # --------------------------------------------------------------------- 検証
 
 
+#: 文字列で選択肢が決まっているフィールド
+_ENUM_FIELDS = {"side": ("l", "r")}
+
+
 def _coerce(value, field, schema, where, errors):
     """1フィールドを型変換して範囲を確認する。戻り値は採用する値"""
     expected, default, low, high = schema
     if value is None:
         return default
+    if expected is str:
+        allowed = _ENUM_FIELDS.get(field)
+        if not isinstance(value, str) or (allowed and value not in allowed):
+            errors.append(
+                "%s.%s は %s のいずれかにしてください: %r"
+                % (where, field, " / ".join(allowed) if allowed else "文字列", value)
+            )
+            return default
+        return value
     if expected is bool:
         if not isinstance(value, bool):
             errors.append("%s.%s は真偽値で指定してください: %r" % (where, field, value))
@@ -275,22 +343,40 @@ def normalize_spec(spec):
             )
             material_key = sorted(result["materials"])[0]
 
-        result["parts"].append(
-            {
-                "type": part_type,
-                "name": part_name,
-                "material": material_key,
-                "params": _normalize_table(
-                    part.get("params"), PART_SCHEMAS[part_type], where + ".params", errors
-                ),
-            }
-        )
+        entry = {
+            "type": part_type,
+            "name": part_name,
+            "material": material_key,
+            "params": _normalize_table(
+                part.get("params"), PART_SCHEMAS[part_type], where + ".params", errors
+            ),
+        }
+        if part_type in DEPENDENT_PART_TYPES:
+            # 袖は袖ぐりの実寸から作るので、どのパーツに付くかが必須
+            entry["attach_to"] = part.get("attach_to")
+            if not isinstance(entry["attach_to"], str) or not entry["attach_to"]:
+                errors.append(
+                    "%s: %s は attach_to に胴パーツの名前を指定してください"
+                    % (where, part_type)
+                )
+        elif part.get("attach_to"):
+            errors.append(
+                "%s: %s は attach_to を取りません(取るのは %s)"
+                % (where, part_type, ", ".join(sorted(DEPENDENT_PART_TYPES)))
+            )
+        result["parts"].append(entry)
 
     if not result["parts"]:
         raise SpecError("有効なパーツが1つもありません: " + " / ".join(errors))
 
     for index, part in enumerate(result["parts"]):
         errors.extend(_modulation_errors(part, "parts[%d]" % index))
+        target = part.get("attach_to")
+        if target and target not in seen_names:
+            errors.append(
+                "parts[%d].attach_to が未知のパーツ名です: %r(あるのは %s)"
+                % (index, target, ", ".join(sorted(seen_names)))
+            )
 
     result["joints"] = []
     for index, joint in enumerate(spec.get("joints") or []):
@@ -305,16 +391,25 @@ def normalize_spec(spec):
         for side in ("a", "b"):
             if joint[side] not in seen_names:
                 errors.append("%s.%s が未知のパーツ名です: %r" % (where, side, joint[side]))
-            if joint[side + "_ring"] not in ("top", "bottom"):
+            if joint[side + "_ring"] not in JOINT_RING_NAMES:
                 errors.append(
-                    "%s.%s_ring は 'top' か 'bottom' です: %r" % (where, side, joint[side + "_ring"])
+                    "%s.%s_ring は %s のいずれかです: %r"
+                    % (where, side, " / ".join(sorted(JOINT_RING_NAMES)), joint[side + "_ring"])
                 )
+        kind = joint.get("kind", "shared")
+        if kind not in JOINT_KINDS:
+            errors.append(
+                "%s.kind は %s のいずれかです: %r"
+                % (where, " / ".join(sorted(JOINT_KINDS)), kind)
+            )
+            kind = "shared"
         result["joints"].append(
             {
                 "a": joint["a"],
                 "a_ring": joint["a_ring"],
                 "b": joint["b"],
                 "b_ring": joint["b_ring"],
+                "kind": kind,
             }
         )
 

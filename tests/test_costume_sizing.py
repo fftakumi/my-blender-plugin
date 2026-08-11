@@ -49,7 +49,7 @@ def test_circumference_radius_roundtrip():
         {"assumed_height": 1.5, "ease": -0.1},
         {"assumed_height": 1.5, "overrides": {"waist": -0.1}},
         {"assumed_height": 1.5, "overrides": {"waist_m": 0.0}},
-        {"assumed_height": 1.5, "overrides": {"bust": 0.5}},
+        {"assumed_height": 1.5, "overrides": {"inseam": 0.5}},
     ],
 )
 def test_bad_input_raises(kwargs):

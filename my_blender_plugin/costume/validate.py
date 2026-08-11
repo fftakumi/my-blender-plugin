@@ -350,6 +350,36 @@ def cross_intersections(mesh_a, mesh_b, cell, eps, skip_a=(), skip_b=()):
 # ------------------------------------------------------------------ リングの寸法
 
 
+def armhole_loops(mesh):
+    """袖ぐりの境界ループを左右に分けて返す。
+
+    胴は「前が開いた筒 + 袖ぐり2つ」なので境界ループは3本。そのうち**一番長い1本が
+    外周**(襟ぐり + 前開き + 裾がつながったもの)で、残りが袖ぐり。
+    左右は重心の x 符号で決める(左が +X)。
+
+    戻り値: {"l": {...}, "r": {...}}(見つかったものだけ)
+    """
+    topo = topology(mesh.verts, mesh.quads)
+    loops = boundary_loops(topo["_boundary_edges"])
+    if len(loops) < 2:
+        return {}
+    measured = [ring_metrics(mesh.verts, loop) for loop in loops]
+    # 外周を除いた残りを袖ぐりとみなす
+    outer = max(range(len(measured)), key=lambda index: measured[index]["perimeter"])
+    result = {}
+    for index, metrics in enumerate(measured):
+        if index == outer:
+            continue
+        label = "l" if metrics["center"][0] >= 0.0 else "r"
+        if label in result and result[label]["perimeter"] >= metrics["perimeter"]:
+            continue
+        result[label] = {
+            key: value for key, value in metrics.items() if not key.startswith("_")
+        }
+        result[label]["indices"] = list(loops[index])
+    return result
+
+
 def loft_ring_indices(ring_size, ring_count, index):
     """ロフトの index 番目のリングの頂点インデックス。
 
@@ -617,7 +647,7 @@ def part_report(mesh, height_units):
     # 折り目がウエストバンドの直下から裾まで続いているか(docs/garments.md 定義 #1・#2)。
     # 「腰では畳まれている」を「腰では折り目が無い」と実装すると上半分が滑らかな筒になり、
     # 数値も目視も通らないのにプリーツスカートに見えない、という状態になる。
-    if design.get("pleats") and mesh.ring_count >= 3:
+    if design.get("pleats") and mesh.ring_count >= 3 and not mesh.holed:
         top_frequency, top_amplitude = pleat_amplitude_at_ring(mesh, 1)
         report["pleat_amplitude_below_band"] = top_amplitude
         report["pleat_frequency_below_band"] = top_frequency
@@ -733,6 +763,22 @@ def joint_gap(mesh_a, ring_a, mesh_b, ring_b):
     )
 
 
+def seam_distance(mesh_a, ring_a, mesh_b, ring_b):
+    """縫い合わせる境界どうしの隔たり。分割数が違ってよい版。
+
+    片方の各頂点から相手の最も近い頂点までの距離の最大値。座標の一致は求めず
+    「縫える距離にあるか」だけを見る(袖ぐりと袖山は分割数もいせ込み量も違う)。
+    """
+    points_a = [mesh_a.verts[index] for index in mesh_a.rings.get(ring_a, [])]
+    points_b = [mesh_b.verts[index] for index in mesh_b.rings.get(ring_b, [])]
+    if not points_a or not points_b:
+        return float("inf")
+    worst = 0.0
+    for point in points_a:
+        worst = max(worst, min(_distance(point, other) for other in points_b))
+    return worst
+
+
 def costume_report(built, normalized_spec):
     """パーツ一式(parts.build_all の戻り値)を検査する"""
     meshes = built["parts"]
@@ -750,14 +796,21 @@ def costume_report(built, normalized_spec):
     joints = []
     for joint in normalized_spec["joints"]:
         mesh_a, mesh_b = by_name[joint["a"]], by_name[joint["b"]]
-        gap = joint_gap(mesh_a, joint["a_ring"], mesh_b, joint["b_ring"])
-        tolerance = max(mean_edges[mesh_a.name], mean_edges[mesh_b.name]) * 1e-3
+        kind = joint.get("kind", "shared")
+        if kind == "sewn":
+            # 縫い合わせなので座標の一致は求めない。近くにあることだけ確かめる
+            gap = seam_distance(mesh_a, joint["a_ring"], mesh_b, joint["b_ring"])
+            tolerance = max(mean_edges[mesh_a.name], mean_edges[mesh_b.name]) * 2.0
+        else:
+            gap = joint_gap(mesh_a, joint["a_ring"], mesh_b, joint["b_ring"])
+            tolerance = max(mean_edges[mesh_a.name], mean_edges[mesh_b.name]) * 1e-3
         joints.append(
             {
                 "a": joint["a"],
                 "a_ring": joint["a_ring"],
                 "b": joint["b"],
                 "b_ring": joint["b_ring"],
+                "kind": kind,
                 "gap": gap,
                 "ok": gap <= tolerance,
                 "tolerance": tolerance,
