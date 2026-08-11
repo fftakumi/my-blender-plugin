@@ -616,7 +616,7 @@ def part_report(mesh, height_units):
         )
     if design.get("length"):
         hard["length"] = _within(extent, design["length"], DIM_TOL)
-    if bottom is not None and design.get("radial_modulations") is not None:
+    if mesh.tubular and bottom is not None and design.get("radial_modulations") is not None:
         expected = design["radial_modulations"]
         wanted = {item["frequency"]: item for item in expected}
         measured = (
@@ -665,6 +665,12 @@ def part_report(mesh, height_units):
             hard["armhole_on_side"] = _check(
                 report["armhole_on_side"], report["armhole_centres"], "体側にある"
             )
+
+    if design.get("sleeve_length_target") and bottom is not None:
+        shoulder = design["shoulder_point"]
+        reach = _distance(shoulder, bottom["center"])
+        report["measured_sleeve_reach"] = reach
+        hard["sleeve_length"] = _within(reach, design["sleeve_length_target"], 0.08)
 
     # 折り目がウエストバンドの直下から裾まで続いているか(docs/garments.md 定義 #1・#2)。
     # 「腰では畳まれている」を「腰では折り目が無い」と実装すると上半分が滑らかな筒になり、

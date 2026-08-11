@@ -348,84 +348,112 @@ def _armhole_frames(ring_points, centres, segments, skip):
 
 
 def build_sleeve(part, table, scale, host=None):
-    """袖。**袖ぐりの実寸から**作る(寸法表の別項目からは作らない)。
+    """袖。**上端リングを袖ぐりの境界ループそのものにする**(定義 #6 と袖山)。
 
-    host は袖ぐりを持つ胴パーツ。袖山の周長 = 袖ぐりの周長 × (1 + ゆとり)。
-    縫製では袖山に 10% 前後のいせ込みを入れるので、その関係をそのまま使う。
+    前の版は上端を円のリングにしていたので、矩形に抜いた袖ぐりの穴の上に円が浮き、
+    隙間が見えて袖山も無かった。穴の頂点をそのまま使えば継ぎ目は定義上ゼロになり、
+    そこから数リングかけて円へ寄せる過程がそのまま袖山(cap)になる。
+
+    そのため**袖の周方向分割数は袖ぐりの境界頂点数で決まる**(spec では指定しない)。
     """
     if host is None:
-        raise PartError(
-            "sleeve は attach_to で胴パーツを指定してください(袖ぐりの実寸が必要)"
-        )
+        raise PartError("sleeve は attach_to で胴パーツを指定してください(袖ぐりの実寸が必要)")
     params = part["params"]
     side = params["side"]
-    frames = host.design.get("armholes") or {}
-    frame = frames.get(side)
-    if frame is None:
+    ring_name = "armhole_" + side
+    indices = host.rings.get(ring_name)
+    if not indices:
         raise PartError(
-            "%s に側 %r の袖ぐりがありません(あるのは %s)"
-            % (host.name, side, ", ".join(sorted(frames)))
+            "%s に %r がありません(あるのは %s)"
+            % (host.name, ring_name, ", ".join(sorted(host.rings)))
         )
 
-    armhole = validate_armhole_perimeter(host, side)
-    seam_length = armhole * (1.0 + params["sleeve_ease"])
-    top_perimeter = armhole * params["bicep_scale"]
-    cuff_perimeter = table["cuff"] * scale * params["cuff_scale"]
-    length = table["sleeve_length"] * params["length_scale"] * scale
+    loop = [host.verts[index] for index in indices]
+    centre = tuple(sum(point[axis] for point in loop) / len(loop) for axis in range(3))
 
     droop = math.radians(params["droop_degrees"])
     sign = 1.0 if side == "l" else -1.0
     direction = (sign * math.cos(droop), 0.0, -math.sin(droop))
     right, up = kernels.orthonormal_frame(direction)
 
-    segments, rings = params["segments"], params["rings"]
-    angles = modulate.circle_angles(segments)
+    # 穴の各頂点を「袖の軸まわりの角度・半径・軸方向のずれ」に分解する
+    polar = []
+    for point in loop:
+        offset = tuple(point[axis] - centre[axis] for axis in range(3))
+        u = sum(offset[axis] * right[axis] for axis in range(3))
+        v = sum(offset[axis] * up[axis] for axis in range(3))
+        axial = sum(offset[axis] * direction[axis] for axis in range(3))
+        polar.append({"angle": math.atan2(v, u), "radius": math.hypot(u, v), "axial": axial})
+    # 角度順に並べ替える(穴は軸から見て星型なので巡回順は変わらない)。
+    # loft_rings は反時計回りのリングを積むと法線が外を向く
+    polar.sort(key=lambda item: item["angle"])
+
+    armhole_perimeter = sum(
+        _distance3(loop[index], loop[index - 1]) for index in range(len(loop))
+    )
+    seam_length = armhole_perimeter * (1.0 + params["sleeve_ease"])
+    bicep_radius = armhole_perimeter * params["bicep_scale"] / (2.0 * math.pi)
+    cuff_radius = table["cuff"] * scale * params["cuff_scale"] / (2.0 * math.pi)
+    length = table["sleeve_length"] * params["length_scale"] * scale
+
+    rings = params["rings"]
+    cap = max(1e-6, min(0.9, params["cap_fraction"]))
     ts = modulate.axis_fractions(rings)
-    origin = frame["centre"]
 
     ring_points = []
     for t in ts:
-        perimeter = top_perimeter + (cuff_perimeter - top_perimeter) * modulate.smoothstep(t)
-        semi_major = modulate.ellipse_semi_major(perimeter, 1.0)
-        centre = tuple(origin[axis] + direction[axis] * length * t for axis in range(3))
-        ring_points.append(ring_on_frame_wrapper(semi_major, angles, centre, right, up))
+        blend = modulate.smoothstep(min(1.0, t / cap))  # 穴の形 → 円
+        taper = modulate.smoothstep(max(0.0, (t - cap) / (1.0 - cap)))
+        target_radius = bicep_radius + (cuff_radius - bicep_radius) * taper
+        axial_plane = t * length
+        points = []
+        for item in polar:
+            radius = item["radius"] + (target_radius - item["radius"]) * blend
+            axial = item["axial"] * (1.0 - blend) + axial_plane
+            u = radius * math.cos(item["angle"])
+            v = radius * math.sin(item["angle"])
+            points.append(
+                tuple(
+                    centre[axis] + right[axis] * u + up[axis] * v + direction[axis] * axial
+                    for axis in range(3)
+                )
+            )
+        ring_points.append(points)
 
     mesh = kernels.loft_rings(ring_points, name=part["name"], closed=True, tubular=False)
     mesh.material = part["material"]
+    shoulder_point = (
+        sign * host.design["shoulder_width"] / 2.0,
+        0.0,
+        host.design["shoulder_z"],
+    )
     mesh.design = {
-        "top_perimeter": top_perimeter,
-        "bottom_perimeter": cuff_perimeter,
-        "bottom_fit_perimeter": cuff_perimeter,
+        "top_perimeter": armhole_perimeter,
+        "bottom_perimeter": 2.0 * math.pi * cuff_radius,
+        "bottom_fit_perimeter": 2.0 * math.pi * cuff_radius,
         "bottom_perimeter_note": None,
-        "top_z": origin[2],
-        "bottom_z": origin[2] - math.sin(droop) * length,
-        "length": None,  # 斜めなので z 方向の伸びと丈は一致しない
+        "top_z": centre[2],
+        "bottom_z": centre[2] - math.sin(droop) * length,
+        "length": None,  # 斜めなので z 幅と袖丈は一致しない
         "depth_ratio_top": 1.0,
         "depth_ratio_bottom": 1.0,
         "radial_modulations": [],
         "pleats": 0,
         "pleat_depth": 0.0,
         "boundary_loops": 2,
-        "boundary_verts": segments,
-        "armhole_perimeter": armhole,
-        "sleeve_ease": params["sleeve_ease"],
+        "boundary_verts": len(polar),
+        # 定義 #6: 肩先から袖の下端までが袖丈
+        "shoulder_point": shoulder_point,
+        "sleeve_length_target": table["sleeve_length"] * params["length_scale"] * scale,
+        "armhole_perimeter": armhole_perimeter,
         "seam_length": seam_length,
+        "sleeve_ease": params["sleeve_ease"],
     }
     return mesh
 
 
-def ring_on_frame_wrapper(semi_major, angles, centre, right, up):
-    return kernels.ring_on_frame([semi_major] * len(angles), angles, centre, right, up)
-
-
-def validate_armhole_perimeter(host, side):
-    """胴に開いた袖ぐりの実周長。袖はこの値から作る"""
-    from . import validate as validate_module
-
-    loops = validate_module.armhole_loops(host)
-    if side not in loops:
-        raise PartError("%s の袖ぐりを特定できませんでした" % host.name)
-    return loops[side]["perimeter"]
+def _distance3(a, b):
+    return math.sqrt(sum((a[axis] - b[axis]) ** 2 for axis in range(3)))
 
 
 def build_collar(part, table, scale):

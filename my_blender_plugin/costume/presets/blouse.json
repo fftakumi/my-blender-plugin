@@ -42,13 +42,13 @@
       "attach_to": "Blouse_Bodice",
       "params": {
         "side": "l",
-        "segments": 14,
-        "rings": 7,
+        "rings": 8,
         "sleeve_ease": 0.1,
         "length_scale": 1.0,
         "cuff_scale": 1.15,
         "droop_degrees": 14.0,
-        "bicep_scale": 0.78
+        "bicep_scale": 0.78,
+        "cap_fraction": 0.28
       }
     },
     {
@@ -58,13 +58,13 @@
       "attach_to": "Blouse_Bodice",
       "params": {
         "side": "r",
-        "segments": 14,
-        "rings": 7,
+        "rings": 8,
         "sleeve_ease": 0.1,
         "length_scale": 1.0,
         "cuff_scale": 1.15,
         "droop_degrees": 14.0,
-        "bicep_scale": 0.78
+        "bicep_scale": 0.78,
+        "cap_fraction": 0.28
       }
     },
     {
