@@ -17,6 +17,12 @@ def test_every_spec_part_type_has_a_builder():
     assert set(parts.BUILDERS) == set(spec_module.PART_SCHEMAS)
 
 
+def test_dependent_part_types_agree_between_spec_and_parts():
+    # 依存パーツの集合は二重管理。片方だけ更新すると attach_to の要求と
+    # host の受け渡しが食い違うので、常に一致していることを固定する
+    assert parts.DEPENDENT_TYPES == spec_module.DEPENDENT_PART_TYPES
+
+
 def test_skirt_body_top_matches_the_sizing_table():
     _normalized, built = build("skirt_flare")
     table = built["sizing"]

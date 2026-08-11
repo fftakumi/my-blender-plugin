@@ -172,10 +172,6 @@ JOINT_RING_NAMES = frozenset(("top", "bottom", "armhole_l", "armhole_r"))
 #:            交差の検査からは外す
 JOINT_KINDS = frozenset(("shared", "sewn"))
 
-# パーツごとの「筒状かどうか」。法線の外向き判定を掛けてよいのは筒状パーツだけ。
-# 袖は斜めに伸びるので、z 軸まわりの外向き判定は当てられない。
-TUBULAR_PART_TYPES = frozenset(("skirt_body", "waistband", "bodice", "collar"))
-
 _MATERIAL_SCHEMA = {
     "base_color": (list, [0.16, 0.19, 0.35], None, None),  # linear RGB
     "roughness": (float, 0.72, 0.0, 1.0),

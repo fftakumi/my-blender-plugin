@@ -1019,6 +1019,15 @@ _MISSING = sorted(set(spec_module.PART_SCHEMAS) - set(BUILDERS))
 if _MISSING:  # pragma: no cover - 実装漏れの検出用
     raise ImportError("parts.BUILDERS に実装が無いパーツ種別があります: %s" % ", ".join(_MISSING))
 
+# 依存パーツの集合は spec 側(attach_to を必須にする)とここ(host を渡す)の
+# 二重管理なので、ずれると「spec は attach_to を要求するのに build_all は host を
+# 渡さない」不整合が静かに起きる。BUILDERS の検査と同じく import 時に突き合わせる
+if spec_module.DEPENDENT_PART_TYPES != DEPENDENT_TYPES:  # pragma: no cover - 実装漏れの検出用
+    raise ImportError(
+        "spec.DEPENDENT_PART_TYPES と parts.DEPENDENT_TYPES がずれています: %s / %s"
+        % (sorted(spec_module.DEPENDENT_PART_TYPES), sorted(DEPENDENT_TYPES))
+    )
+
 
 def build_all(normalized_spec):
     """正規化済み spec からパーツ一式を組み立てて返す。
