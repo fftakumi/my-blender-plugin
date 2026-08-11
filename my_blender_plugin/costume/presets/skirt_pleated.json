@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "name": "skirt_pleated",
+  "assumed_height": 1.53,
+  "ease": 0.03,
+  "meters_per_unit": 1.0,
+  "poly_budget": 3000,
+  "materials": {
+    "main": {
+      "base_color": [0.08, 0.1, 0.22],
+      "roughness": 0.68,
+      "sheen": 0.3
+    }
+  },
+  "parts": [
+    {
+      "type": "waistband",
+      "name": "Skirt_Waistband",
+      "material": "main",
+      "params": {
+        "waist_z": 0.62,
+        "height": 0.035,
+        "segments": 48,
+        "rings": 3,
+        "flare": 1.0
+      }
+    },
+    {
+      "type": "skirt_body",
+      "name": "Skirt_Body",
+      "material": "main",
+      "params": {
+        "waist_z": 0.62,
+        "length": 0.27,
+        "segments": 48,
+        "rings": 10,
+        "flare": 1.5,
+        "flare_curve": 1.4,
+        "hip_hug": 1.0,
+        "pleats": 24,
+        "pleat_depth": 0.22,
+        "pleat_duty": 0.5,
+        "pleat_start": 0.15,
+        "drape_folds": 0,
+        "drape_depth": 0.0
+      }
+    }
+  ],
+  "joints": [
+    {
+      "a": "Skirt_Waistband",
+      "a_ring": "bottom",
+      "b": "Skirt_Body",
+      "b_ring": "top"
+    }
+  ]
+}

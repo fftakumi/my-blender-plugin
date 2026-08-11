@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "name": "skirt_a0",
+  "assumed_height": 1.53,
+  "ease": 0.03,
+  "meters_per_unit": 1.0,
+  "poly_budget": 64,
+  "materials": {
+    "main": {
+      "base_color": [0.16, 0.19, 0.35],
+      "roughness": 0.72,
+      "sheen": 0.25
+    }
+  },
+  "parts": [
+    {
+      "type": "skirt_body",
+      "name": "Skirt_Body",
+      "material": "main",
+      "params": {
+        "segments": 8,
+        "rings": 2,
+        "flare": 1.5,
+        "pleats": 0
+      }
+    }
+  ],
+  "joints": []
+}
