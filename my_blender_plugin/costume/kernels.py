@@ -240,17 +240,26 @@ def ring_from_polar(radii, angles, z, center=(0.0, 0.0), depth_ratio=1.0):
 
     depth_ratio は「前後の厚み / 左右の幅」。1.0 なら円、それ未満なら y 方向に
     潰れた楕円になる。人体の胴の断面は円ではないので、既定の衣装はここを 1 未満にする。
+
+    z は数値でも、**分割ごとの列**でもよい。列を渡すと水平でないリングになる
+    (襟ぐりの前下がりがこれ。水平な輪にすると襟が煙突に見える)。
     """
     if len(radii) != len(angles):
         raise ValueError("radii(%d) と angles(%d) の個数が違います" % (len(radii), len(angles)))
     if depth_ratio <= 0.0:
         raise ValueError("depth_ratio は正の数にしてください: %r" % (depth_ratio,))
+    if isinstance(z, (list, tuple)):
+        if len(z) != len(angles):
+            raise ValueError("z(%d) と angles(%d) の個数が違います" % (len(z), len(angles)))
+        zs = list(z)
+    else:
+        zs = [z] * len(angles)
     cx, cy = center
     return [
         (
             cx + radius * math.cos(angle),
             cy + radius * depth_ratio * math.sin(angle),
-            z,
+            height,
         )
-        for radius, angle in zip(radii, angles)
+        for radius, angle, height in zip(radii, angles, zs)
     ]

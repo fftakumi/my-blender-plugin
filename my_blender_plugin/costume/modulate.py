@@ -281,3 +281,80 @@ def circle_angles(segments):
         raise ValueError("segments は3以上にしてください: %r" % (segments,))
     step = 2.0 * math.pi / segments
     return [index * step for index in range(segments)]
+
+
+# ------------------------------------------------------------------ 袖と襟ぐり
+#
+# 定義は docs/garments.md #8〜#12。どちらも「距離」ではなく**形**を決める関数で、
+# ブラウスが服に見えるかどうかはここで決まる。
+
+
+#: 肘の位置(袖丈に対する比)。**解剖の位置であってパラメータではない。**
+#: 検証はここで袖幅が保たれているかを見るので、生成側の elbow_fraction を
+#: 動かしてもゲートは逃げない(逃げると「全長を細めた円錐」が通ってしまう)
+SLEEVE_ELBOW_T = 0.5
+
+
+def sleeve_radius_profile(t, bicep_radius, cuff_radius, elbow, cuff_start):
+    """袖の半径。**肘まで二の腕の太さを保ち、袖口へ細り、最後は一定(カフス)**。
+
+    全長を滑らかに細めると針のような円錐になり、袖に見えない(定義 #11)。
+    実物の袖は肘までほぼ同じ太さで、前腕で絞られ、カフスは一定幅の帯で終わる。
+
+        t <= elbow                : 二の腕の太さのまま
+        elbow < t < cuff_start    : 袖口へ滑らかに細る
+        t >= cuff_start           : 一定 = カフスの帯(定義 #12)
+    """
+    if not 0.0 <= elbow < cuff_start <= 1.0:
+        raise ValueError(
+            "0 <= elbow < cuff_start <= 1 にしてください: elbow=%r, cuff_start=%r"
+            % (elbow, cuff_start)
+        )
+    if t <= elbow:
+        return bicep_radius
+    if t >= cuff_start:
+        return cuff_radius
+    local = (t - elbow) / (cuff_start - elbow)
+    return bicep_radius + (cuff_radius - bicep_radius) * smoothstep(local)
+
+
+def neckline_drop(angle, front_drop, back_drop, front_angle):
+    """襟ぐりの**前下がり**。側頸点で 0、前中心で front_drop、後ろ中心で back_drop 下がる。
+
+    水平な輪にすると襟が煙突・肩ヨークが平皿に見える(定義 #8)。
+    実物の襟ぐりは前が深く後ろが浅い、非対称な曲線になっている。
+
+    側頸点(前から ±90°)で折れるのは**意図どおり**。実物の製図でも前身頃の
+    襟ぐり線と後ろ身頃の襟ぐり線は側頸点で角度を持って出会う。
+    """
+    if front_drop < 0.0 or back_drop < 0.0:
+        raise ValueError(
+            "襟ぐりの落差は 0 以上にしてください: front=%r, back=%r" % (front_drop, back_drop)
+        )
+    phase = math.cos(angle - front_angle)
+    return front_drop * max(0.0, phase) + back_drop * max(0.0, -phase)
+
+
+def button_positions(top_z, bottom_z, count, top_inset, bottom_inset):
+    """ボタンの高さを等間隔で返す(定義 #14)。
+
+    実物のシャツは第1ボタンが襟のすぐ下、最後が裾より少し上に来る。
+    上下の余白を入れて、その間を等間隔に割る。**間隔が等しいこと**を
+    検証側が変動係数で確かめるので、ここは等間隔でなければならない。
+    """
+    if count < 1:
+        raise ValueError("count は1以上にしてください: %r" % (count,))
+    if bottom_z >= top_z:
+        raise ValueError("bottom_z(%r) は top_z(%r) より下にしてください" % (bottom_z, top_z))
+    span = top_z - bottom_z
+    if top_inset < 0.0 or bottom_inset < 0.0 or top_inset + bottom_inset >= 1.0:
+        raise ValueError(
+            "余白は 0 以上で合計 1 未満にしてください: top=%r, bottom=%r"
+            % (top_inset, bottom_inset)
+        )
+    first = top_z - span * top_inset
+    last = bottom_z + span * bottom_inset
+    if count == 1:
+        return [(first + last) * 0.5]
+    step = (first - last) / (count - 1)
+    return [first - step * index for index in range(count)]

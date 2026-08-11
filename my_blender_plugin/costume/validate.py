@@ -30,6 +30,21 @@ EDGE_LENGTH_OVER_H_RANGE = (0.0206, 0.0311)
 #: プリーツ 周0.34/軸0.02、バンド 周0.00/軸0.00)を見て 0.40 に置いた。
 EDGE_CV_MAX = 0.40
 
+# ---- ブラウスの「形」の定義(docs/garments.md #9〜#14)のしきい値 ----
+#: 肩傾斜の許容差(度)。新文化式は 前22°/後18° なので設計値20°の左右幅ぶん
+SHOULDER_SLOPE_TOL_DEG = 8.0
+#: 袖の垂れ角の許容差(度)。角度そのものは設計値で、これは回帰の網
+SLEEVE_DROOP_TOL_DEG = 3.0
+#: 袖山の下から肘までのリング周長 / 二の腕周長 の下限。
+#: これを外すと「全長を滑らかに細めた針のような円錐」が通ってしまう
+SLEEVE_HOLD_MIN_RATIO = 0.92
+#: カフスの帯の中でリング周長がばらついてよい割合(帯は一定半径のはず)
+CUFF_BAND_STEP_MAX = 0.01
+#: シャツと言えるボタンの最少個数
+BUTTON_MIN_COUNT = 4
+#: ボタンの間隔の変動係数の上限
+BUTTON_GAP_CV_MAX = 0.15
+
 
 # ------------------------------------------------------------------ 小物
 
@@ -665,12 +680,98 @@ def part_report(mesh, height_units):
             hard["armhole_on_side"] = _check(
                 report["armhole_on_side"], report["armhole_centres"], "体側にある"
             )
+        # ---- 形の定義 #7〜#9 ----
+        if design.get("garment_length") and report["measured_garment_length"] is not None:
+            hard["garment_length"] = _within(
+                report["measured_garment_length"], design["garment_length"], 0.08
+            )
+        # 「前下がりが無い」は前下がりを測っても検出できない。設計値の有無で
+        # 条件分岐すると、前下がりを 0 にした瞬間にゲートごと消える。
+        # 胴には必ず襟ぐりがあるので、ここは**常に**判定する
+        if "front_neck_drop" in design and report["measured_front_neck_drop"] is not None:
+            hard["neck_front_drop"] = _within(
+                report["measured_front_neck_drop"], design["front_neck_drop"], 0.30
+            )
+            # 前が後ろより深いこと。左右対称の水平な輪ではないことの担保
+            hard["neck_drops_forward"] = _check(
+                report["measured_front_neck_drop"]
+                > report["measured_back_neck_drop"] + 1e-6,
+                (report["measured_front_neck_drop"], report["measured_back_neck_drop"]),
+                "前 > 後ろ",
+            )
+        if (
+            design.get("shoulder_slope_degrees")
+            and report["measured_shoulder_slope_degrees"] is not None
+        ):
+            target = design["shoulder_slope_degrees"]
+            measured = report["measured_shoulder_slope_degrees"]
+            hard["shoulder_slope"] = _check(
+                abs(measured - target) <= SHOULDER_SLOPE_TOL_DEG,
+                measured,
+                "%.1f ± %.1f 度" % (target, SHOULDER_SLOPE_TOL_DEG),
+            )
 
     if design.get("sleeve_length_target") and bottom is not None:
         shoulder = design["shoulder_point"]
         reach = _distance(shoulder, bottom["center"])
         report["measured_sleeve_reach"] = reach
         hard["sleeve_length"] = _within(reach, design["sleeve_length_target"], 0.08)
+        # ---- 形の定義 #10〜#12 ----
+        report.update(sleeve_metrics(mesh, design))
+        if report["measured_droop_degrees"] is not None:
+            target = design.get("droop_degrees", 0.0)
+            hard["sleeve_droops"] = _check(
+                abs(report["measured_droop_degrees"] - target) <= SLEEVE_DROOP_TOL_DEG,
+                report["measured_droop_degrees"],
+                "%.1f ± %.1f 度" % (target, SLEEVE_DROOP_TOL_DEG),
+            )
+        if report["measured_hold_ratio"] is not None:
+            hard["sleeve_not_cone"] = _check(
+                report["measured_hold_ratio"] >= SLEEVE_HOLD_MIN_RATIO,
+                report["measured_hold_ratio"],
+                ">= %.2f" % SLEEVE_HOLD_MIN_RATIO,
+            )
+        if report["measured_cuff_perimeter"] is not None:
+            hard["cuff_perimeter"] = _within(
+                report["measured_cuff_perimeter"], design["cuff_perimeter"], 0.08
+            )
+            hard["cuff_band_is_flat"] = _check(
+                report["measured_cuff_band_step"] <= CUFF_BAND_STEP_MAX,
+                report["measured_cuff_band_step"],
+                "<= %.3f" % CUFF_BAND_STEP_MAX,
+            )
+        else:
+            hard["cuff_band_exists"] = _check(False, len(design.get("cuff_rings", [])), ">= 2")
+
+    # ---- 定義 #13: 前立て ----
+    if design.get("placket_width") and not design.get("button_count"):
+        report.update(placket_metrics(mesh, design))
+        hard["placket_width"] = _within(
+            report["measured_placket_width"], design["placket_width"], 0.05
+        )
+        hard["placket_centred"] = _check(
+            report["measured_placket_centred"], report["measured_placket_width"], "前中心"
+        )
+
+    # ---- 定義 #14: ボタン ----
+    if design.get("button_count"):
+        report.update(button_metrics(mesh, design))
+        hard["button_count"] = _check(
+            report["measured_button_count"] == design["button_count"]
+            and design["button_count"] >= BUTTON_MIN_COUNT,
+            report["measured_button_count"],
+            "%d (>= %d)" % (design["button_count"], BUTTON_MIN_COUNT),
+        )
+        hard["button_spacing"] = _check(
+            report["measured_button_gap_cv"] <= BUTTON_GAP_CV_MAX,
+            report["measured_button_gap_cv"],
+            "<= %.2f" % BUTTON_GAP_CV_MAX,
+        )
+        hard["buttons_on_placket"] = _check(
+            report["buttons_inside_placket"] and report["buttons_within_placket_z"],
+            (report["buttons_inside_placket"], report["buttons_within_placket_z"]),
+            "前立ての内側",
+        )
 
     # 折り目がウエストバンドの直下から裾まで続いているか(docs/garments.md 定義 #1・#2)。
     # 「腰では畳まれている」を「腰では折り目が無い」と実装すると上半分が滑らかな筒になり、
@@ -808,7 +909,7 @@ def seam_distance(mesh_a, ring_a, mesh_b, ring_b):
 
 
 def bodice_metrics(mesh, design):
-    """ブラウスの胴について、定義 #1〜#5 を測る。
+    """ブラウスの胴について、定義 #1〜#5 と #7〜#9 を測る。
 
     設計値との突き合わせは part_report がやる。ここは**実物から測るだけ**。
     """
@@ -816,10 +917,15 @@ def bodice_metrics(mesh, design):
     result = {
         "measured_shoulder_width": None,
         "measured_neck_perimeter": None,
+        "measured_neck_seam": None,
         "measured_armhole_depth": None,
         "measured_shoulder_span": None,
         "armhole_on_side": None,
         "armhole_centres": {},
+        "measured_front_neck_drop": None,
+        "measured_back_neck_drop": None,
+        "measured_shoulder_slope_degrees": None,
+        "measured_garment_length": None,
     }
 
     shoulder = mesh.rings.get("shoulder")
@@ -831,9 +937,34 @@ def bodice_metrics(mesh, design):
     top = mesh.rings.get("top")
     if top:
         points = [mesh.verts[index] for index in top]
+        # 前下がりのぶん立体的な縫い目長は首回りより長くなる(実物の襟も首より長い)。
+        # 「首に合うか」は **水平に投影した周長** で見る。縫い目長は襟の設計値として別に出す
+        flat = [(point[0], point[1], 0.0) for point in points]
         result["measured_neck_perimeter"] = sum(
+            _distance(flat[index], flat[index - 1]) for index in range(1, len(flat))
+        ) + _distance(flat[0], flat[-1])
+        result["measured_neck_seam"] = sum(
             _distance(points[index], points[index - 1]) for index in range(1, len(points))
-        ) + _distance(points[0], points[-1])
+        )
+
+        # 定義 #8: 側頸点(左右の端)を基準に、前中心と後ろ中心がどれだけ下がっているか
+        snp = max(points, key=lambda point: abs(point[0]))
+        front = min(points, key=lambda point: point[1])
+        back = max(points, key=lambda point: point[1])
+        result["measured_front_neck_drop"] = snp[2] - front[2]
+        result["measured_back_neck_drop"] = snp[2] - back[2]
+        result["measured_garment_length"] = snp[2] - min(
+            point[2] for point in mesh.verts
+        )
+
+        # 定義 #9: 側頸点から肩先への傾き
+        if shoulder:
+            tip = max((mesh.verts[index] for index in shoulder), key=lambda p: abs(p[0]))
+            run = abs(tip[0]) - abs(snp[0])
+            if run > 1e-9:
+                result["measured_shoulder_slope_degrees"] = math.degrees(
+                    math.atan2(snp[2] - tip[2], run)
+                )
 
     if loops and shoulder:
         shoulder_z = max(mesh.verts[index][2] for index in shoulder)
@@ -863,6 +994,104 @@ def bodice_metrics(mesh, design):
         if on_side:
             result["armhole_on_side"] = all(on_side)
     return result
+
+
+def sleeve_metrics(mesh, design):
+    """袖について定義 #10〜#12 を測る(形の検証)。
+
+    ランドマーク間の距離だけでは「水平に突き出した針のような円錐」でも合格してしまう。
+    ここで測るのは**軸の向き**と**周長のプロファイル**。
+    """
+    result = {
+        "measured_droop_degrees": None,
+        "ring_perimeters": [],
+        "measured_hold_ratio": None,
+        "measured_cuff_perimeter": None,
+        "measured_cuff_band_step": None,
+    }
+    if not mesh.ring_size or mesh.ring_count < 2:
+        return result
+
+    rings = [
+        [mesh.verts[index] for index in loft_ring_indices(mesh.ring_size, mesh.ring_count, r)]
+        for r in range(mesh.ring_count)
+    ]
+    result["ring_perimeters"] = [
+        sum(_distance(ring[i], ring[(i + 1) % len(ring)]) for i in range(len(ring)))
+        for ring in rings
+    ]
+
+    def centre(ring):
+        return tuple(sum(point[axis] for point in ring) / len(ring) for axis in range(3))
+
+    # 定義 #10: 軸(上端中心 → 下端中心)が水平から何度下がっているか
+    top, bottom = centre(rings[0]), centre(rings[-1])
+    axis = tuple(bottom[a] - top[a] for a in range(3))
+    horizontal = math.hypot(axis[0], axis[1])
+    if horizontal > 1e-9 or abs(axis[2]) > 1e-9:
+        result["measured_droop_degrees"] = math.degrees(math.atan2(-axis[2], horizontal))
+
+    # 定義 #11: 袖山の下から肘までの各リングが、二の腕の太さを保っているか
+    hold = [index for index in design.get("hold_rings", []) if index < len(rings)]
+    bicep = design.get("bicep_perimeter")
+    if hold and bicep:
+        result["measured_hold_ratio"] = (
+            min(result["ring_perimeters"][index] for index in hold) / bicep
+        )
+
+    # 定義 #12: カフスは一定半径の帯。最後の2リングの周長差が無いこと
+    cuff = [index for index in design.get("cuff_rings", []) if index < len(rings)]
+    if len(cuff) >= 2:
+        lengths = [result["ring_perimeters"][index] for index in cuff]
+        result["measured_cuff_perimeter"] = lengths[-1]
+        widest = max(lengths)
+        result["measured_cuff_band_step"] = (
+            (widest - min(lengths)) / widest if widest > 0 else 0.0
+        )
+    return result
+
+
+def placket_metrics(mesh, design):
+    """前立てについて定義 #13 を測る"""
+    xs = [point[0] for point in mesh.verts]
+    zs = [point[2] for point in mesh.verts]
+    return {
+        "measured_placket_width": (max(xs) - min(xs)) if xs else None,
+        "measured_placket_length": (max(zs) - min(zs)) if zs else None,
+        "measured_placket_centred": (abs(max(xs) + min(xs)) < 1e-6) if xs else None,
+    }
+
+
+def button_metrics(mesh, design):
+    """ボタン列について定義 #14 を測る。
+
+    個数は「メッシュの独立したシェルの数」ではなく設計値の申告を使うと恒真になるので、
+    **境界ループの本数から数え直す**(ボタン1個につき外周+中心の2本)。
+    """
+    topo = topology(mesh.verts, mesh.quads)
+    loops = boundary_loops(topo["_boundary_edges"])
+    zs = sorted(design.get("button_zs", []), reverse=True)
+    gaps = [zs[index - 1] - zs[index] for index in range(1, len(zs))]
+    mean_gap = sum(gaps) / len(gaps) if gaps else 0.0
+    spread = 0.0
+    if gaps and mean_gap > 0:
+        variance = sum((gap - mean_gap) ** 2 for gap in gaps) / len(gaps)
+        spread = math.sqrt(variance) / mean_gap
+    xs = [point[0] for point in mesh.verts]
+    half = design.get("placket_width", 0.0) / 2.0
+    return {
+        "measured_button_count": len(loops) // 2,
+        "measured_button_gap_cv": spread,
+        "measured_button_gap": mean_gap,
+        "buttons_inside_placket": (
+            bool(xs) and half > 0 and max(xs) <= half and min(xs) >= -half
+        ),
+        "buttons_within_placket_z": (
+            bool(zs)
+            and max(zs) <= design.get("placket_top_z", float("inf"))
+            and min(zs) >= design.get("placket_bottom_z", float("-inf"))
+        ),
+    }
 
 
 def costume_report(built, normalized_spec):

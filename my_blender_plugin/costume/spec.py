@@ -57,15 +57,21 @@ _WAISTBAND = {
 #: ブラウスの胴。前が開いた筒に袖ぐりの穴を2つ開ける(定義は docs/garments.md)
 _BODICE = {
     "shoulder_z": (float, 0.82, 0.3, 1.0),  # 肩の高さ /H
-    "hem_z": (float, 0.585, 0.1, 0.95),  # 裾の高さ /H(ウエストより少し下)
+    # 着丈は **サイズ表の製品実寸**から決まる。ここは倍率だけ(勘で置いた
+    # hem_z がクロップ丈の原因だったので、絶対値を spec に書かせない)
+    "length_scale": (float, 1.0, 0.3, 2.0),
     "segments": (int, 28, 8, 256),
-    "rings": (int, 9, 3, 128),
-    "bust_t": (float, 0.35, 0.0, 1.0),  # バストが来る軸方向の位置
-    "hem_scale": (float, 0.96, 0.3, 2.0),  # 裾の周長 / バスト
-    "neck_ease": (float, 0.12, 0.0, 1.0),  # 襟ぐりのゆとり(首回りに対する比)
+    "rings": (int, 12, 3, 128),
+    "bust_t": (float, 0.28, 0.0, 1.0),  # バストが来る軸方向の位置
+    "waist_t": (float, 0.62, 0.0, 1.0),  # ウエストが来る軸方向の位置
+    "waist_scale": (float, 0.93, 0.3, 2.0),  # ウエストの周長 / バスト
+    "hem_scale": (float, 0.99, 0.3, 2.0),  # 裾の周長 / バスト
+    "neck_ease": (float, 0.12, 0.0, 1.0),  # 襟ぐりのゆとり(首の素寸に対する比)
     "neck_depth_ratio": (float, 0.85, 0.2, 1.0),
     "shoulder_depth_ratio": (float, 0.55, 0.2, 1.0),  # 肩線の断面 前後/左右
-    "shoulder_slope": (float, 0.014, 0.0, 0.1),  # 襟ぐりが肩より高い量 /H(製図の肩下がり)
+    # 襟ぐりの前下がり / サイズ表の値。0 にすると水平な輪 = 煙突に見える
+    "neck_drop_scale": (float, 1.0, 0.0, 3.0),
+    "neck_fade": (float, 0.09, 0.01, 0.5),  # 前下がりが消えるまでの垂直距離 /H
     "armhole_segments": (int, 3, 1, 32),  # 袖ぐりが占める周方向の分割数
 }
 
@@ -73,25 +79,51 @@ _BODICE = {
 _SLEEVE = {
     "side": (str, "l", None, None),  # "l" か "r"
     # 周方向の分割数は指定しない。袖ぐりの境界頂点数で決まる
-    "rings": (int, 8, 3, 128),
-    "cap_fraction": (float, 0.28, 0.05, 0.9),  # 袖山(穴の形→円)に使う袖丈の割合
+    "rings": (int, 11, 3, 128),
+    "cap_fraction": (float, 0.22, 0.05, 0.9),  # 袖山(穴の形→円)に使う袖丈の割合
+    "elbow_fraction": (float, 0.50, 0.1, 0.95),  # ここまで二の腕の太さを保つ(肘)
+    "cuff_start": (float, 0.90, 0.2, 0.999),  # ここから下が一定半径 = カフスの帯
     "sleeve_ease": (float, 0.10, 0.0, 0.5),  # 袖山のいせ込み(縫い目長の検算に使う)
-    # 筒の太さ / 袖ぐり周長。まっすぐな筒は袖山の曲線を持たないので、
-    # 縫い目長そのままだと二の腕が袖ぐりと同じ太さになって円錐に見える(設計値)
-    "bicep_scale": (float, 0.78, 0.3, 1.2),
+    # 二の腕の太さ / **サイズ表の袖幅**。袖ぐりの穴は矩形なので周長が実物の
+    # 袖ぐり寸法より3割大きく、そこから出すとコウモリ袖に膨らむ
+    "bicep_scale": (float, 1.0, 0.3, 2.0),
     "length_scale": (float, 1.0, 0.05, 1.5),  # 袖丈 / サイズ表の袖丈
     "cuff_scale": (float, 1.0, 0.3, 3.0),  # 袖口 / サイズ表の袖口
-    "droop_degrees": (float, 8.0, -30.0, 80.0),  # 水平からの下がり角
+    "droop_degrees": (float, 35.0, -30.0, 80.0),  # 水平からの下がり角(姿勢は設計値)
 }
 
-#: 立ち襟
+#: 台襟(立ち襟)。**襟ぐりの実物に乗せる**ので attach_to が必須
 _COLLAR = {
-    "base_z": (float, 0.845, 0.3, 1.0),  # 襟の付け根の高さ /H
-    "height_ratio": (float, 0.022, 0.002, 0.15),  # 襟の高さ /H
-    "segments": (int, 20, 6, 128),
+    "height_ratio": (float, 0.022, 0.002, 0.15),  # 台襟の高さ /H。3.5cm 相当
     "rings": (int, 3, 2, 32),
-    "flare": (float, 1.08, 0.8, 2.0),  # 上端 / 下端 の周長比
-    "depth_ratio": (float, 0.85, 0.2, 1.0),
+    "flare": (float, 1.06, 0.8, 2.0),  # 上端 / 下端 の差し渡し比
+}
+
+#: 襟の羽根(折り返し)。台襟の上端から下へ倒れる。attach_to は台襟
+_COLLAR_FALL = {
+    "height_ratio": (float, 0.030, 0.002, 0.15),  # 羽根の丈 /H。4.7cm 相当
+    "rings": (int, 3, 2, 32),
+    "flare": (float, 1.34, 0.8, 3.0),  # 先端 / 折り返し の差し渡し比
+}
+
+#: 前立て。胴の前面に沿う帯。attach_to が必須
+_PLACKET = {
+    "width": (float, 0.019, 0.004, 0.08),  # 帯の幅 /H。3.0cm 相当
+    "standoff": (float, 0.0016, 0.0, 0.02),  # 胴の面からどれだけ前へ出すか /H
+    "bulge": (float, 0.18, 0.0, 1.0),  # 中央のふくらみ / 幅
+    "top_extend": (float, 0.0, 0.0, 0.1),  # 襟ぐりより上へ伸ばす量 /H
+    "columns": (int, 5, 3, 32),  # 幅方向の分割数
+    "rings": (int, 10, 2, 128),  # 縦方向の分割数
+}
+
+#: ボタン列。前立てに付くので attach_to は前立て
+_BUTTONS = {
+    "count": (int, 6, 1, 24),
+    "radius": (float, 0.0035, 0.0005, 0.02),  # 半径 /H。直径 1.1cm 相当
+    "segments": (int, 10, 6, 64),
+    "standoff": (float, 0.0006, 0.0, 0.01),  # 前立ての面からどれだけ前へ出すか /H
+    "top_inset": (float, 0.06, 0.0, 0.5),  # 上端からの余白 / 前立ての丈
+    "bottom_inset": (float, 0.10, 0.0, 0.5),  # 下端からの余白 / 前立ての丈
 }
 
 PART_SCHEMAS = {
@@ -100,10 +132,15 @@ PART_SCHEMAS = {
     "bodice": _BODICE,
     "sleeve": _SLEEVE,
     "collar": _COLLAR,
+    "collar_fall": _COLLAR_FALL,
+    "placket": _PLACKET,
+    "buttons": _BUTTONS,
 }
 
-#: 他のパーツの実寸を必要とするパーツ。spec に attach_to が必須
-DEPENDENT_PART_TYPES = frozenset(("sleeve",))
+#: 他のパーツの**実物**から作るパーツ。spec に attach_to が必須
+DEPENDENT_PART_TYPES = frozenset(
+    ("sleeve", "collar", "collar_fall", "placket", "buttons")
+)
 
 #: joints で指定できる境界リングの名前
 JOINT_RING_NAMES = frozenset(("top", "bottom", "armhole_l", "armhole_r"))

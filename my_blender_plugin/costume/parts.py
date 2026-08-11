@@ -225,54 +225,113 @@ def build_bodice(part, table, scale):
     params = part["params"]
     height = table["height"]
     shoulder_z = params["shoulder_z"] * height
-    hem_z = params["hem_z"] * height
-    if hem_z >= shoulder_z:
-        raise PartError(
-            "hem_z(%.3f) は shoulder_z(%.3f) より下にしてください"
-            % (params["hem_z"], params["shoulder_z"])
-        )
 
     segments = params["segments"]
     body_rings = params["rings"]
     angles = _front_open_angles(segments)
     body_depth = table["depth_ratio"]
 
-    # 襟ぐり: 首回り + ゆとり。肩より少し高い位置に置く(肩の下がりぶん)
-    neck_perimeter = table["neck"] * (1.0 + params["neck_ease"])
+    # 襟ぐり: 首の**素寸** + 襟ぐり固有のゆとり。胴のゆとり(ease)は首には掛けない
+    # (バストを 12% 出すために首まで 12% 広げるとボートネックになる)
+    neck_perimeter = table["body"]["neck"] * (1.0 + params["neck_ease"])
     neck_semi = modulate.ellipse_semi_major(neck_perimeter, params["neck_depth_ratio"])
-    neck_z = shoulder_z + params["shoulder_slope"] * height
 
     # 肩線: 長半径がそのまま肩幅の半分(定義 #3 をここで満たす)
     shoulder_semi = table["shoulder_width"] / 2.0
 
+    # 肩傾斜(定義 #9): 側頸点は肩先より「水平の渡り × tan(傾斜)」だけ高い
+    slope = math.radians(table["shoulder_slope_degrees"])
+    shoulder_drop = max(0.0, shoulder_semi - neck_semi) * math.tan(slope)
+    snp_z = shoulder_z + shoulder_drop
+
+    # 前下がり(定義 #8): 襟ぐりは水平の輪ではない。前が深く後ろが浅い
+    scale_drop = params["neck_drop_scale"]
+    front_drop = table["front_neck_drop"] * scale_drop
+    back_drop = table["back_neck_drop"] * scale_drop
+    drops = [
+        modulate.neckline_drop(angle, front_drop, back_drop, FRONT_ANGLE) for angle in angles
+    ]
+
+    # 着丈(定義 #7): 側頸点から下へ。製品実寸表から取る(勘で置いた hem_z が
+    # クロップ丈の原因だった。経緯は docs/garments.md)
+    garment_length = table["garment_length"] * params["length_scale"]
+    hem_z = snp_z - garment_length
+    if hem_z >= shoulder_z:
+        raise PartError(
+            "着丈(%.3fm)が短すぎて裾が肩線より上に来ます" % (garment_length,)
+        )
+
     # 胴: 肩の下でバストへ、そこから裾へ
     bust_semi = modulate.ellipse_semi_major(table["bust"], body_depth)
+    waist_semi = modulate.ellipse_semi_major(table["bust"] * params["waist_scale"], body_depth)
     hem_semi = modulate.ellipse_semi_major(table["bust"] * params["hem_scale"], body_depth)
     span = shoulder_z - hem_z
     spacing = span / (body_rings - 1)
     bust_t = max(0.0, min(1.0, params["bust_t"]))
+    waist_t = max(bust_t, min(1.0, params["waist_t"]))
 
-    rows = [(neck_z, neck_semi, params["neck_depth_ratio"])]
-    rows.append((shoulder_z, shoulder_semi, params["shoulder_depth_ratio"]))
-    for index in range(1, body_rings):
-        t = index / (body_rings - 1)
+    # 襟ぐりの落差は下へ行くほど消える(でないと裾までうねる)
+    fade_span = max(1e-6, params["neck_fade"] * height)
+
+    def fade(z_base):
+        return 1.0 - modulate.smoothstep(min(1.0, (shoulder_z - z_base) / fade_span))
+
+    def body_semi(t):
+        """軸方向 t での長半径と断面の厚み比。肩 → バスト → ウエスト → 裾"""
         if t <= bust_t and bust_t > 0.0:
             local = modulate.smoothstep(t / bust_t)
-            semi = shoulder_semi + (bust_semi - shoulder_semi) * local
-            depth = params["shoulder_depth_ratio"] + (
-                body_depth - params["shoulder_depth_ratio"]
-            ) * local
-        else:
-            local = 0.0 if bust_t >= 1.0 else (t - bust_t) / (1.0 - bust_t)
-            semi = bust_semi + (hem_semi - bust_semi) * modulate.smoothstep(local)
-            depth = body_depth
-        rows.append((shoulder_z - t * span, semi, depth))
+            return (
+                shoulder_semi + (bust_semi - shoulder_semi) * local,
+                params["shoulder_depth_ratio"]
+                + (body_depth - params["shoulder_depth_ratio"]) * local,
+            )
+        if t <= waist_t and waist_t > bust_t:
+            local = modulate.smoothstep((t - bust_t) / (waist_t - bust_t))
+            return bust_semi + (waist_semi - bust_semi) * local, body_depth
+        base = waist_semi if waist_t > bust_t else bust_semi
+        local = 0.0 if waist_t >= 1.0 else (t - waist_t) / (1.0 - waist_t)
+        return base + (hem_semi - base) * modulate.smoothstep(local), body_depth
+
+    # リング0 = 襟ぐり、リング1 = 肩線、リング2.. = バスト→ウエスト→裾。
+    # 0 と 1 は落差をそのまま持つので、その間の帯が「前下がりに沿った肩ヨーク」になる
+    # 各行は (分割ごとのz, 前中心のz, 長半径, 断面の厚み比)。
+    # 前中心の z は前立てが乗る面を出すのに使う(頂点はそこに無いので式から出す)
+    rows = [
+        (
+            [snp_z - drop for drop in drops],
+            snp_z - front_drop,
+            neck_semi,
+            params["neck_depth_ratio"],
+        ),
+        (
+            [shoulder_z - drop for drop in drops],
+            shoulder_z - front_drop,
+            shoulder_semi,
+            params["shoulder_depth_ratio"],
+        ),
+    ]
+    for index in range(1, body_rings):
+        t = index / (body_rings - 1)
+        semi, depth = body_semi(t)
+        base = shoulder_z - t * span
+        weight = fade(base)
+        rows.append(
+            (
+                [base - drop * weight for drop in drops],
+                base - front_drop * weight,
+                semi,
+                depth,
+            )
+        )
 
     ring_points = [
         kernels.ring_from_polar(
-            [semi * scale] * segments, angles, z * scale, depth_ratio=depth
+            [semi * scale] * segments,
+            angles,
+            [z * scale for z in zs],
+            depth_ratio=depth,
         )
-        for z, semi, depth in rows
+        for zs, _front_z, semi, depth in rows
     ]
 
     # 袖ぐり: 肩線の直下(リング1と2の間)から、袖ぐり深さのところまで(定義 #4)
@@ -295,11 +354,13 @@ def build_bodice(part, table, scale):
     )
     mesh.material = part["material"]
     mesh.design = {
-        "top_perimeter": neck_perimeter * scale,
+        # 襟ぐりは前下がりで水平ではないので、上端の実周長は設計の楕円より長い。
+        # 「首に合うか」は**水平に投影した周長**で見る(下の neck_perimeter)
+        "top_perimeter": None,
         "bottom_perimeter": table["bust"] * params["hem_scale"] * scale,
         "bottom_fit_perimeter": table["bust"] * params["hem_scale"] * scale,
         "bottom_perimeter_note": None,
-        "top_z": neck_z * scale,
+        "top_z": snp_z * scale,
         "bottom_z": hem_z * scale,
         "length": None,  # 襟ぐりが肩より上にあるので z 幅と着丈は一致しない
         "depth_ratio_top": params["neck_depth_ratio"],
@@ -316,6 +377,20 @@ def build_bodice(part, table, scale):
         "armhole_depth": armhole_depth * scale,
         "shoulder_span": (table["shoulder_width"] / 2.0 - neck_semi) * scale,
         "sleeve_length": table["sleeve_length"] * scale,
+        # --- 定義 #7〜#9(形) ---
+        "garment_length": garment_length * scale,
+        # 検証はここではなく**製図の値そのもの**と突き合わせる。spec の
+        # neck_drop_scale を 0 にすると設計値も 0 になり、設計値と比べる形の
+        # ゲートは「0 と 0 が一致する」で通ってしまう(前下がりが消えても落ちない)
+        "front_neck_drop": table["front_neck_drop"] * scale,
+        "back_neck_drop": table["back_neck_drop"] * scale,
+        "built_front_neck_drop": front_drop * scale,
+        "shoulder_slope_degrees": table["shoulder_slope_degrees"],
+        # 前立てとボタンが乗る前中心の面。(z, 前面の y) を上から下へ
+        "front_profile": [
+            (front_z * scale, -semi * depth * scale)
+            for _zs, front_z, semi, depth in rows
+        ],
     }
     mesh.design["armholes"] = _armhole_frames(ring_points, centres, segments, skip)
     from . import validate as validate_module
@@ -392,19 +467,48 @@ def build_sleeve(part, table, scale, host=None):
         _distance3(loop[index], loop[index - 1]) for index in range(len(loop))
     )
     seam_length = armhole_perimeter * (1.0 + params["sleeve_ease"])
-    bicep_radius = armhole_perimeter * params["bicep_scale"] / (2.0 * math.pi)
+    # 袖幅は**サイズ表から**取る。メッシュに開けた袖ぐりは矩形なので周長が実物の
+    # 袖ぐり寸法より3割ほど大きく、そこから出すと袖がコウモリ袖に膨らむ
+    bicep_perimeter = table["bicep"] * params["bicep_scale"] * scale
+    bicep_radius = bicep_perimeter / (2.0 * math.pi)
     cuff_radius = table["cuff"] * scale * params["cuff_scale"] / (2.0 * math.pi)
-    length = table["sleeve_length"] * params["length_scale"] * scale
+
+    # 袖丈は**肩先から袖口まで**(定義 #6)。筒は袖ぐりの重心から伸ばすので、
+    # 「肩先からの距離が袖丈になる軸長」を解く。重心から袖丈ぶん伸ばすと
+    # 肩先→袖口が袖丈を超える(袖ぐりの重心は肩先より内側かつ下にある)
+    shoulder_point = (
+        sign * table["shoulder_width"] / 2.0 * scale,
+        0.0,
+        host.design["shoulder_z"],
+    )
+    target = table["sleeve_length"] * params["length_scale"] * scale
+    gap = tuple(centre[axis] - shoulder_point[axis] for axis in range(3))
+    along = sum(gap[axis] * direction[axis] for axis in range(3))
+    radial = sum(value * value for value in gap) - along * along
+    discriminant = target * target - radial
+    if discriminant <= 0.0:
+        raise PartError(
+            "袖丈(%.3f)が短すぎて肩先から袖口まで届きません(袖ぐりまでで %.3f)"
+            % (target, math.sqrt(max(0.0, radial)))
+        )
+    length = math.sqrt(discriminant) - along
+    if length <= 0.0:
+        raise PartError("袖丈(%.3f)が短すぎます(袖ぐりより内側で終わります)" % (target,))
 
     rings = params["rings"]
     cap = max(1e-6, min(0.9, params["cap_fraction"]))
+    elbow = max(cap, min(0.95, params["elbow_fraction"]))
+    cuff_start = min(0.999, max(elbow + 1e-3, params["cuff_start"]))
     ts = modulate.axis_fractions(rings)
 
     ring_points = []
     for t in ts:
         blend = modulate.smoothstep(min(1.0, t / cap))  # 穴の形 → 円
-        taper = modulate.smoothstep(max(0.0, (t - cap) / (1.0 - cap)))
-        target_radius = bicep_radius + (cuff_radius - bicep_radius) * taper
+        # 全長を滑らかに細めると針のような円錐になる(定義 #11)。
+        # 肘まで二の腕の太さを保ち、そこから絞り、最後は一定 = カフス(定義 #12)
+        target_radius = modulate.sleeve_radius_profile(
+            t, bicep_radius, cuff_radius, elbow, cuff_start
+        )
         axial_plane = t * length
         points = []
         for item in polar:
@@ -422,11 +526,6 @@ def build_sleeve(part, table, scale, host=None):
 
     mesh = kernels.loft_rings(ring_points, name=part["name"], closed=True, tubular=False)
     mesh.material = part["material"]
-    shoulder_point = (
-        sign * host.design["shoulder_width"] / 2.0,
-        0.0,
-        host.design["shoulder_z"],
-    )
     mesh.design = {
         "top_perimeter": armhole_perimeter,
         "bottom_perimeter": 2.0 * math.pi * cuff_radius,
@@ -448,6 +547,17 @@ def build_sleeve(part, table, scale, host=None):
         "armhole_perimeter": armhole_perimeter,
         "seam_length": seam_length,
         "sleeve_ease": params["sleeve_ease"],
+        # --- 定義 #10〜#12(形) ---
+        "droop_degrees": params["droop_degrees"],
+        "bicep_perimeter": bicep_perimeter,
+        "cuff_perimeter": table["cuff"] * params["cuff_scale"] * scale,
+        # 二の腕の太さを保っていなければならない区間(袖山の下〜**肘**)のリング番号。
+        # 上限は spec の elbow_fraction ではなく解剖の位置 SLEEVE_ELBOW_T。
+        # ここを spec 側の値にすると、テーパーを早く始めた瞬間に区間も一緒に
+        # 縮んでゲートが逃げ、円錐が通ってしまう
+        "hold_rings": _hold_ring_indices(ts, cap, modulate.SLEEVE_ELBOW_T),
+        # カフスの帯(一定半径)に入るリング番号。2本以上必要
+        "cuff_rings": [index for index, t in enumerate(ts) if t >= cuff_start],
     }
     return mesh
 
@@ -456,50 +566,297 @@ def _distance3(a, b):
     return math.sqrt(sum((a[axis] - b[axis]) ** 2 for axis in range(3)))
 
 
-def build_collar(part, table, scale):
-    """立ち襟。首まわりの短い開いた筒(前が開いている)"""
+def _hold_ring_indices(ts, cap, elbow_t):
+    """袖山の下から肘までのリング番号。リングが粗くて区間に入らないときは肘に一番近い1本"""
+    inside = [index for index, t in enumerate(ts) if cap <= t <= elbow_t]
+    if inside:
+        return inside
+    return [min(range(len(ts)), key=lambda index: abs(ts[index] - elbow_t))]
+
+
+def build_collar(part, table, scale, host=None):
+    """立ち襟。**下端リングを胴の襟ぐりそのものにする**(袖と同じ手口)。
+
+    前の版は水平な輪を base_z に置いていたので、前下がりの襟ぐりから浮いて
+    煙突に見えた。襟ぐりの頂点をそのまま使えば継ぎ目はゼロで、前下がりにも自動で乗る。
+    """
+    if host is None:
+        raise PartError("collar は attach_to で胴パーツを指定してください(襟ぐりの実物が必要)")
     params = part["params"]
     height = table["height"]
-    base_z = params["base_z"] * height
-    collar_height = params["height_ratio"] * height
-    segments, rings = params["segments"], params["rings"]
-    angles = _front_open_angles(segments)
-    ts = modulate.axis_fractions(rings)
+    collar_height = params["height_ratio"] * height * scale
+    indices = host.rings.get("top")
+    if not indices:
+        raise PartError("%s に襟ぐり(top)がありません" % (host.name,))
 
-    neck = table["neck"]
-    depth_ratio = params["depth_ratio"]
+    seam = [host.verts[index] for index in indices]
+    cx = sum(point[0] for point in seam) / len(seam)
+    cy = sum(point[1] for point in seam) / len(seam)
+
+    rings = params["rings"]
+    ts = modulate.axis_fractions(rings)
+    # 上ほど外へ開く(立ち襟は首から少し離れる)。リングは上から下へ並べる
     ring_points = []
     for t in ts:
-        # 上に向かってわずかに開く(立ち襟は首から少し離れる)
-        perimeter = neck * (1.0 + (params["flare"] - 1.0) * (1.0 - t))
-        semi_major = modulate.ellipse_semi_major(perimeter, depth_ratio)
+        up = 1.0 - t  # 1 = 襟の上端、0 = 襟ぐりの縫い目
+        widen = 1.0 + (params["flare"] - 1.0) * up
         ring_points.append(
-            kernels.ring_from_polar(
-                [semi_major * scale] * segments,
-                angles,
-                (base_z + collar_height * (1.0 - t)) * scale,
-                depth_ratio=depth_ratio,
-            )
+            [
+                (
+                    cx + (point[0] - cx) * widen,
+                    cy + (point[1] - cy) * widen,
+                    point[2] + collar_height * up,
+                )
+                for point in seam
+            ]
         )
 
     mesh = kernels.loft_rings(ring_points, name=part["name"], closed=False, tubular=True)
     mesh.material = part["material"]
+    seam_length = sum(
+        _distance3(seam[index], seam[index - 1]) for index in range(1, len(seam))
+    )
     mesh.design = {
-        "top_perimeter": neck * params["flare"] * scale,
-        "bottom_perimeter": neck * scale,
-        "bottom_fit_perimeter": neck * scale,
-        "bottom_perimeter_note": None,
-        "top_z": (base_z + collar_height) * scale,
-        "bottom_z": base_z * scale,
-        "length": collar_height * scale,
-        "depth_ratio_top": depth_ratio,
-        "depth_ratio_bottom": depth_ratio,
+        "top_perimeter": None,  # 前下がりに沿うので水平な輪ではない
+        "bottom_perimeter": None,
+        "bottom_fit_perimeter": None,
+        "bottom_perimeter_note": "襟ぐりの実物に乗るので周長は胴側で検算する",
+        "top_z": max(point[2] for point in ring_points[0]),
+        "bottom_z": min(point[2] for point in seam),
+        "length": None,
+        "depth_ratio_top": None,
+        "depth_ratio_bottom": None,
         "radial_modulations": [],
         "pleats": 0,
         "pleat_depth": 0.0,
         # 前が開いた短い筒 = 外周が1本の輪
         "boundary_loops": 1,
         "boundary_verts": None,
+        "collar_seam_length": seam_length,
+        "collar_height": collar_height,
+    }
+    return mesh
+
+
+def build_collar_fall(part, table, scale, host=None):
+    """襟の羽根(折り返し)。台襟の上端リングから**下へ・外へ**降りる。
+
+    立ち襟(台襟)だけだと板が立っているだけで、シャツの襟には見えない。
+    実物は台襟の上で折り返して羽根が肩へ倒れている。
+
+    **別パーツにしたのは法線の都合。** ロフトは「リングを上から下へ積む」前提で
+    巻き方向を決めているので、台襟(上へ)と羽根(下へ)を1本の鎖に繋ぐと
+    前半の面が裏返る。折り返しの位置で切って2パーツにすれば、どちらも上から下へ積める。
+    """
+    if host is None:
+        raise PartError("collar_fall は attach_to で台襟を指定してください")
+    indices = host.rings.get("top")
+    if not indices:
+        raise PartError("%s に折り返し位置(top)がありません" % (host.name,))
+    params = part["params"]
+    fold = [host.verts[index] for index in indices]
+    cx = sum(point[0] for point in fold) / len(fold)
+    cy = sum(point[1] for point in fold) / len(fold)
+    drop = params["height_ratio"] * table["height"] * scale
+
+    ring_points = []
+    for t in modulate.axis_fractions(params["rings"]):
+        widen = 1.0 + (params["flare"] - 1.0) * t
+        ring_points.append(
+            [
+                (
+                    cx + (point[0] - cx) * widen,
+                    cy + (point[1] - cy) * widen,
+                    point[2] - drop * t,
+                )
+                for point in fold
+            ]
+        )
+
+    mesh = kernels.loft_rings(ring_points, name=part["name"], closed=False, tubular=True)
+    mesh.material = part["material"]
+    mesh.design = {
+        "top_perimeter": None,
+        "bottom_perimeter": None,
+        "bottom_fit_perimeter": None,
+        "bottom_perimeter_note": "台襟の上端に乗るので周長は台襟側で決まる",
+        "top_z": max(point[2] for point in fold),
+        "bottom_z": min(point[2] for point in ring_points[-1]),
+        "length": None,
+        "depth_ratio_top": None,
+        "depth_ratio_bottom": None,
+        "radial_modulations": [],
+        "pleats": 0,
+        "pleat_depth": 0.0,
+        "boundary_loops": 1,
+        "boundary_verts": None,
+        "fall_drop": drop,
+        "fall_flare": params["flare"],
+    }
+    return mesh
+
+
+def build_placket(part, table, scale, host=None):
+    """前立て。前中心を縦に走る帯(定義 #13)。
+
+    前を1分割ぶん空けるだけでは**細いスリット**にしかならない。実物のシャツは
+    別布の帯が前中心に重なって付いていて、そこにボタンが並ぶ。
+    胴の前面プロファイル(z, y)に沿わせるので、胴の断面を変えても剥がれない。
+    """
+    if host is None:
+        raise PartError("placket は attach_to で胴パーツを指定してください(前面の実寸が必要)")
+    profile = (host.design or {}).get("front_profile")
+    if not profile:
+        raise PartError("%s に front_profile がありません" % (host.name,))
+
+    params = part["params"]
+    height = table["height"]
+    width = params["width"] * height * scale
+    standoff = params["standoff"] * height * scale
+    columns = max(3, params["columns"])
+    half = width * 0.5
+    # 帯はわずかに丸く張り出す(平らな板は貼り紙に見える)
+    bulge = params["bulge"] * width
+
+    top_z = profile[0][0] + params["top_extend"] * height * scale
+    bottom_z = profile[-1][0]
+    rows = max(2, params["rings"])
+
+    def front_y(z):
+        """胴の前面の y を z で線形補間する(プロファイルは上から下へ並んでいる)"""
+        if z >= profile[0][0]:
+            return profile[0][1]
+        for index in range(1, len(profile)):
+            upper_z, upper_y = profile[index - 1]
+            lower_z, lower_y = profile[index]
+            if lower_z <= z <= upper_z:
+                if upper_z == lower_z:
+                    return lower_y
+                local = (upper_z - z) / (upper_z - lower_z)
+                return upper_y + (lower_y - upper_y) * local
+        return profile[-1][1]
+
+    ring_points = []
+    for row in range(rows):
+        t = row / (rows - 1)
+        z = top_z + (bottom_z - top_z) * t
+        base_y = front_y(z) - standoff
+        points = []
+        for column in range(columns):
+            u = column / (columns - 1)  # 0 = +X 側、1 = -X 側
+            x = half - width * u
+            # 中央がいちばん前に出る
+            points.append((x, base_y - bulge * math.sin(math.pi * u), z))
+        ring_points.append(points)
+
+    mesh = kernels.loft_rings(
+        ring_points, name=part["name"], closed=False, tubular=False
+    )
+    mesh.material = part["material"]
+    mesh.design = {
+        "top_perimeter": None,
+        "bottom_perimeter": None,
+        "bottom_fit_perimeter": None,
+        "bottom_perimeter_note": None,
+        "top_z": top_z,
+        "bottom_z": bottom_z,
+        "length": None,
+        "depth_ratio_top": None,
+        "depth_ratio_bottom": None,
+        "radial_modulations": [],
+        "pleats": 0,
+        "pleat_depth": 0.0,
+        "boundary_loops": 1,  # 開いたシート = 外周1本
+        "boundary_verts": None,
+        # --- 定義 #13 ---
+        "placket_width": width,
+        "placket_top_z": top_z,
+        "placket_bottom_z": bottom_z,
+        "placket_front_y": min(point[1] for ring in ring_points for point in ring),
+    }
+    return mesh
+
+
+def build_buttons(part, table, scale, host=None):
+    """ボタン列(定義 #14)。前立ての上に等間隔で並ぶ小さなドーム。
+
+    1パーツに全個ぶんのシェルを入れる(spec にボタンを1個ずつ書かせない)。
+    """
+    if host is None:
+        raise PartError("buttons は attach_to で前立てを指定してください")
+    design = host.design or {}
+    if not design.get("placket_width"):
+        raise PartError("%s は前立てではありません(placket_width が無い)" % (host.name,))
+
+    params = part["params"]
+    count = params["count"]
+    radius = params["radius"] * table["height"] * scale
+    zs = modulate.button_positions(
+        design["placket_top_z"],
+        design["placket_bottom_z"],
+        count,
+        params["top_inset"],
+        params["bottom_inset"],
+    )
+    # 前立ての表面よりわずかに前。触れさせると面が交差して不合格になる
+    base_y = design["placket_front_y"] - params["standoff"] * table["height"] * scale
+    segments = max(6, params["segments"])
+    angles = modulate.circle_angles(segments)
+
+    verts, quads, uv_loops = [], [], []
+    for z in zs:
+        # ドーム: 外周 → 中ほど(前へ) → ほぼ中心(いちばん前)
+        profile = ((1.0, 0.0), (0.62, 0.38), (0.14, 0.52))
+        shell = [
+            [
+                (
+                    radius * factor * math.cos(angle),
+                    base_y - radius * depth,
+                    z + radius * factor * math.sin(angle),
+                )
+                for angle in angles
+            ]
+            for factor, depth in profile
+        ]
+        piece = kernels.loft_rings(shell, name=part["name"], closed=True, tubular=False)
+        offset = len(verts)
+        verts.extend(piece.verts)
+        quads.extend(tuple(index + offset for index in quad) for quad in piece.quads)
+        uv_loops.extend(piece.uv_loops)
+
+    mesh = kernels.PartMesh(
+        name=part["name"],
+        verts=verts,
+        quads=quads,
+        uv_loops=uv_loops,
+        rings={},
+        ring_size=segments,
+        ring_count=3 * count,
+        tubular=False,
+        material=part["material"],
+    )
+    mesh.design = {
+        "top_perimeter": None,
+        "bottom_perimeter": None,
+        "bottom_fit_perimeter": None,
+        "bottom_perimeter_note": None,
+        "top_z": max(zs) + radius,
+        "bottom_z": min(zs) - radius,
+        "length": None,
+        "depth_ratio_top": None,
+        "depth_ratio_bottom": None,
+        "radial_modulations": [],
+        "pleats": 0,
+        "pleat_depth": 0.0,
+        "boundary_loops": 2 * count,  # ボタン1個につき 外周 + 中心の小穴
+        "boundary_verts": None,
+        # --- 定義 #14 ---
+        "button_count": count,
+        "button_zs": list(zs),
+        "button_radius": radius,
+        "placket_width": design["placket_width"],
+        "placket_top_z": design["placket_top_z"],
+        "placket_bottom_z": design["placket_bottom_z"],
     }
     return mesh
 
@@ -510,10 +867,16 @@ BUILDERS = {
     "bodice": build_bodice,
     "sleeve": build_sleeve,
     "collar": build_collar,
+    "collar_fall": build_collar_fall,
+    "placket": build_placket,
+    "buttons": build_buttons,
 }
 
-#: 他のパーツの実寸を必要とするパーツ(袖は袖ぐりから作る)。build_all が順番を保証する
-DEPENDENT_TYPES = frozenset(("sleeve",))
+#: 他のパーツの**実物**から作るパーツ。build_all が依存順を保証する。
+#: 継ぎ目や位置を計算し直さずに相手の頂点をそのまま使うので、ずれが原理的に起きない
+DEPENDENT_TYPES = frozenset(
+    ("sleeve", "collar", "collar_fall", "placket", "buttons")
+)
 
 # spec が知っているパーツ種別と、ここで作れる種別がずれていないことを import 時に確かめる
 _MISSING = sorted(set(spec_module.PART_SCHEMAS) - set(BUILDERS))
@@ -534,29 +897,35 @@ def build_all(normalized_spec):
     # メートルで計算して最後に unit へ直す(1 unit = meters_per_unit メートル)
     scale = 1.0 / normalized_spec["meters_per_unit"]
 
-    # 袖は袖ぐりの実寸から作るので、依存しないパーツを先に組む
-    ordered = sorted(
-        normalized_spec["parts"], key=lambda part: part["type"] in DEPENDENT_TYPES
-    )
+    # 依存パーツは相手の**実物**から作るので、依存の解けたものから順に組む。
+    # ボタンは前立てに、前立て・襟・袖は胴に付くので二段の依存がある
+    pending = list(normalized_spec["parts"])
     meshes = []
     built = {}
-    for part in ordered:
-        builder = BUILDERS.get(part["type"])
-        if builder is None:  # pragma: no cover - spec 側で弾かれている
-            raise PartError("未知のパーツ種別です: %r" % (part["type"],))
-        if part["type"] in DEPENDENT_TYPES:
-            host_name = part.get("attach_to")
-            host = built.get(host_name)
-            if host is None:
-                raise PartError(
-                    "%s の attach_to が %r ですが、そのパーツがありません(あるのは %s)"
-                    % (part["name"], host_name, ", ".join(sorted(built)))
+    while pending:
+        progressed = False
+        for part in list(pending):
+            builder = BUILDERS.get(part["type"])
+            if builder is None:  # pragma: no cover - spec 側で弾かれている
+                raise PartError("未知のパーツ種別です: %r" % (part["type"],))
+            if part["type"] in DEPENDENT_TYPES:
+                host = built.get(part.get("attach_to"))
+                if host is None:
+                    continue
+                mesh = builder(part, table, scale, host=host)
+            else:
+                mesh = builder(part, table, scale)
+            built[mesh.name] = mesh
+            meshes.append(mesh)
+            pending.remove(part)
+            progressed = True
+        if not progressed:
+            raise PartError(
+                "attach_to の依存が解けません(相手が無いか循環しています): %s"
+                % ", ".join(
+                    "%s→%r" % (part["name"], part.get("attach_to")) for part in pending
                 )
-            mesh = builder(part, table, scale, host=host)
-        else:
-            mesh = builder(part, table, scale)
-        built[mesh.name] = mesh
-        meshes.append(mesh)
+            )
 
     # spec に書かれた順に戻す(レポートの並びを spec と揃える)
     order = {part["name"]: index for index, part in enumerate(normalized_spec["parts"])}
