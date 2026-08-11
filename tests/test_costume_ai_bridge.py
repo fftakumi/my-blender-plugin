@@ -1,9 +1,27 @@
 import json
+import os
 import types
 
 import pytest
 
-from my_blender_plugin.costume import ai_bridge, spec as spec_module
+from my_blender_plugin.costume import ai_bridge, parts, spec as spec_module, validate
+
+
+def blouse_envelope_json():
+    """封筒型の正常応答(spec は同梱 blouse プリセットの生 JSON)"""
+    path = os.path.join(spec_module.PRESET_DIR, "blouse.json")
+    with open(path, encoding="utf-8") as handle:
+        blouse = json.load(handle)
+    return json.dumps(
+        {
+            "similar_preset": "blouse",
+            "differences": ["袖丈が少し短い"],
+            "unsupported": ["フリルは表現できない"],
+            "parts_plan": ["bodice: 胴", "sleeve×2: 袖"],
+            "spec": blouse,
+        },
+        ensure_ascii=False,
+    )
 
 
 def valid_spec_json():
@@ -32,6 +50,27 @@ def test_prompt_includes_the_text_and_the_schema():
     assert "紺のプリーツスカート" in prompt
     for part_type in spec_module.PART_SCHEMAS:
         assert part_type in prompt
+
+
+def test_prompt_walks_through_the_design_procedure():
+    """類似プリセット→差分→パーツリスト→spec の順に考えさせる指示があること"""
+    prompt = ai_bridge.build_prompt("なにか")
+    assert "similar_preset" in prompt
+    assert "differences" in prompt
+    assert "unsupported" in prompt
+    assert "parts_plan" in prompt
+    # attach_to の説明(schema hint)も同梱される
+    assert "attach_to" in prompt
+
+
+def test_prompt_carries_full_examples_and_a_catalog():
+    prompt = ai_bridge.build_prompt("なにか")
+    # 完全な実例は2つ(skirt_flare と blouse の生 JSON)
+    assert '"Blouse_Bodice"' in prompt
+    assert '"Skirt_Body"' in prompt
+    # 残りは1行カタログとして全プリセットが載る
+    for name in spec_module.list_presets():
+        assert name in prompt
 
 
 def test_extract_json_from_a_bare_object():
@@ -203,6 +242,130 @@ def test_default_runner_disables_tools_and_settings():
     assert argv[argv.index("--allowedTools") + 1] == ""
     assert argv[argv.index("--permission-mode") + 1] == "default"
     assert argv[argv.index("--setting-sources") + 1] == ""
+
+
+# ---------------------------------------- 封筒型出力・リトライ・フォールバック連鎖
+
+
+def test_an_envelope_with_a_blouse_spec_travels_the_whole_pipeline():
+    """封筒型応答のブラウス級 spec が採用され、ビルド前検証まで通ること"""
+    result = ai_bridge.spec_from_text("白い半袖ブラウス", runner=lambda p: blouse_envelope_json())
+    assert result["source"] == "ai"
+    assert result["attempts"] == 1
+    assert result["unsupported"] == ["フリルは表現できない"]
+    types = [part["type"] for part in result["spec"]["parts"]]
+    assert "bodice" in types and "sleeve" in types
+    # 採用された spec は実際に組めて検証も通る
+    built = parts.build_all(result["spec"])
+    report = validate.costume_report(built, result["spec"])
+    assert report["failed"] == []
+
+
+def test_a_bare_spec_without_an_envelope_is_still_accepted():
+    """封筒を忘れた旧形式(素の spec JSON)にも後方互換で対応する"""
+    result = ai_bridge.request_spec("なにか", runner=lambda p: valid_spec_json())
+    assert result["spec"]["name"] == "ai_skirt"
+    assert result["envelope"] == {}
+
+
+def test_a_bad_first_answer_is_retried_with_the_failure_reason():
+    """1回目が不正なら、失敗理由を添えて1回だけ作り直させる"""
+    prompts = []
+
+    def runner(prompt):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return json.dumps(
+                {"similar_preset": "blouse", "spec": {"schema": 1, "name": "x", "parts": [{"type": "hood"}]}}
+            )
+        return blouse_envelope_json()
+
+    result = ai_bridge.spec_from_text("白いブラウス", runner=runner)
+    assert result["source"] == "ai"
+    assert result["attempts"] == 2
+    assert len(prompts) == 2
+    # 2回目のプロンプトには前回の出力と不採用の理由が含まれる
+    assert "不採用の理由" in prompts[1]
+    assert "hood" in prompts[1]
+
+
+def test_a_runner_failure_is_not_retried():
+    """CLI 不在やタイムアウトは環境の問題。120秒×2 待たせない"""
+    calls = []
+
+    def runner(prompt):
+        calls.append(prompt)
+        raise ai_bridge.AIBridgeError("claude が居ない")
+
+    result = ai_bridge.spec_from_text("謎の衣装", runner=runner)
+    assert result["source"] == "keywords"
+    assert len(calls) == 1
+
+
+def test_a_spec_that_normalises_but_cannot_build_is_rejected():
+    """sizing の中身は normalize が見ない。ビルド前検証が防波堤になること"""
+    broken = json.dumps(
+        {
+            "schema": 1,
+            "name": "x",
+            "materials": {"main": {}},
+            "sizing": {"nonsense_measure": 1.0},
+            "parts": [{"type": "skirt_body", "name": "S", "material": "main", "params": {}}],
+            "joints": [],
+        }
+    )
+    result = ai_bridge.spec_from_text("謎の衣装", runner=lambda p: broken)
+    assert result["source"] == "keywords"
+    assert "組み立てられませんでした" in result["ai_error"]
+
+
+def test_fallback_prefers_the_preset_the_ai_said_was_similar():
+    """封筒は読めたが spec が全滅 → AI が挙げた類似プリセットに落ちる"""
+    bad_spec_envelope = json.dumps(
+        {
+            "similar_preset": "blouse",
+            "spec": {"schema": 1, "name": "x", "parts": [{"type": "hood"}]},
+        }
+    )
+    result = ai_bridge.spec_from_text("かっこいい鎧", runner=lambda p: bad_spec_envelope)
+    assert result["source"] == "keywords"
+    assert result["base_preset"] == "blouse"
+    assert "blouse" in result["fallback_warning"]
+    assert "かっこいい鎧" in result["fallback_warning"]
+
+
+def test_fallback_warning_is_explicit_when_nothing_was_understood():
+    result = ai_bridge.spec_from_text(
+        "かっこいい鎧", runner=lambda p: (_ for _ in ()).throw(ai_bridge.AIBridgeError("オフ"))
+    )
+    assert result["source"] == "keywords"
+    assert result["base_preset"] == "skirt_flare"
+    warning = result["fallback_warning"]
+    assert "かっこいい鎧" in warning
+    assert "skirt_flare" in warning
+    assert "解釈できなかった" in warning
+
+
+def test_no_warning_when_the_dictionary_understood_the_garment():
+    """種類が辞書で分かっているフォールバックは妥当な形なので警告しない"""
+
+    def runner(prompt):
+        raise ai_bridge.AIBridgeError("オフ")
+
+    result = ai_bridge.spec_from_text("紺のプリーツミニスカート", runner=runner)
+    assert result["source"] == "keywords"
+    assert result["fallback_warning"] is None
+    assert result["ai_error"]
+
+
+def test_explicit_height_comes_only_from_the_text():
+    def refuse(prompt):
+        raise ai_bridge.AIBridgeError("オフ")
+
+    with_height = ai_bridge.spec_from_text("身長160cmのスカート", runner=refuse)
+    assert with_height["explicit_height"] == pytest.approx(1.6)
+    without = ai_bridge.spec_from_text("スカート", runner=refuse)
+    assert without["explicit_height"] is None
 
 
 def test_default_runner_passes_arguments_as_a_list():
