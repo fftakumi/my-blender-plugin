@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "name": "skirt_flare",
+  "assumed_height": 1.53,
+  "ease": 0.03,
+  "meters_per_unit": 1.0,
+  "poly_budget": 3000,
+  "materials": {
+    "main": {
+      "base_color": [0.16, 0.19, 0.35],
+      "roughness": 0.72,
+      "sheen": 0.25
+    }
+  },
+  "parts": [
+    {
+      "type": "waistband",
+      "name": "Skirt_Waistband",
+      "material": "main",
+      "params": {
+        "waist_z": 0.62,
+        "height": 0.035,
+        "segments": 32,
+        "rings": 3,
+        "flare": 1.0
+      }
+    },
+    {
+      "type": "skirt_body",
+      "name": "Skirt_Body",
+      "material": "main",
+      "params": {
+        "waist_z": 0.62,
+        "length": 0.30,
+        "segments": 32,
+        "rings": 10,
+        "flare": 1.55,
+        "flare_curve": 1.35,
+        "hip_hug": 1.0,
+        "pleats": 0,
+        "drape_folds": 14,
+        "drape_depth": 0.065
+      }
+    }
+  ],
+  "joints": [
+    {
+      "a": "Skirt_Waistband",
+      "a_ring": "bottom",
+      "b": "Skirt_Body",
+      "b_ring": "top"
+    }
+  ]
+}

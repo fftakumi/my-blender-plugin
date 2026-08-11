@@ -2,6 +2,8 @@ import hashlib
 
 import bpy
 
+from .costume import ai_bridge, parts as costume_parts, spec as costume_spec, validate
+
 
 def grid_positions(count, spacing):
     """count x count のグリッド配置座標(原点中心)のリストを返す純粋関数"""
@@ -495,10 +497,157 @@ class MYPLUGIN_OT_fit_body_to_corset(bpy.types.Operator):
         return body.data.shape_keys.key_blocks[modifier_name]
 
 
+def _preset_items():
+    """spec プリセットを EnumProperty の項目にする"""
+    names = costume_spec.list_presets()
+    return [(name, name, "同梱プリセット %s" % name) for name in names] or [
+        ("skirt_flare", "skirt_flare", "既定")
+    ]
+
+
+class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
+    """説明文またはプリセットから衣装メッシュとマテリアルを生成する"""
+
+    bl_idname = "myplugin.generate_costume"
+    bl_label = "衣装を生成"
+    bl_description = (
+        "説明文(例:「紺のプリーツミニスカート」)またはプリセットから、"
+        "衣装単体のメッシュを生成してマテリアルまで割り当てる。"
+        "素体は不要。コレクション Costume_<名前> に入る"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    source: bpy.props.EnumProperty(
+        name="入力",
+        description="説明文から組み立てるか、同梱プリセットを使うか",
+        items=[
+            ("TEXT", "説明文", "日本語・英語の説明文から組み立てる"),
+            ("PRESET", "プリセット", "同梱の spec をそのまま使う"),
+        ],
+        default="TEXT",
+    )
+    description: bpy.props.StringProperty(
+        name="説明",
+        description="作りたい衣装の説明。例:「紺の24本プリーツのひざ丈スカート」",
+        default="紺のプリーツミニスカート",
+    )
+    preset: bpy.props.EnumProperty(
+        name="プリセット", description="同梱の spec", items=lambda self, context: _preset_items()
+    )
+    image_path: bpy.props.StringProperty(
+        name="参考画像",
+        description=(
+            "指定すると画像から色を取ってマテリアルに反映する(空なら説明文の色を使う)。"
+            "取るのは色だけで、形は説明文/プリセットが決める"
+        ),
+        default="",
+        subtype="FILE_PATH",
+    )
+    image_colors: bpy.props.IntProperty(
+        name="画像から取る色数",
+        description="1色目を主色にし、残りは accent マテリアルとして足す",
+        default=3,
+        min=1,
+        max=8,
+    )
+    use_ai: bpy.props.BoolProperty(
+        name="キーワードで解けなければAIに頼る",
+        description=(
+            "説明文がキーワード辞書で解けなかったときだけ claude -p に spec を作らせる。"
+            "外部プロセスを起動する。失敗しても辞書の結果で続行する"
+        ),
+        default=False,
+    )
+    meters_per_unit: bpy.props.FloatProperty(
+        name="1unitのメートル数",
+        description="シーンのスケール。1unit=1cm のシーンなら 0.01",
+        default=1.0,
+        min=1e-6,
+    )
+    assumed_height: bpy.props.FloatProperty(
+        name="想定身長(m)",
+        description="寸法の基準。単体の衣装に身長は無いのでここで明示する",
+        default=1.53,
+        min=0.1,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "OBJECT"
+
+    def invoke(self, context, event):
+        # シーンの単位設定から埋める。1unit=1cm のシーン(scale_length 0.01)で
+        # 既定の 1.0 のまま押すと身長1.53"cm"の衣装ができて見つからなくなる
+        scale = getattr(context.scene.unit_settings, "scale_length", 1.0)
+        if scale:
+            self.meters_per_unit = scale
+        return context.window_manager.invoke_props_dialog(self, width=420)
+
+    def execute(self, context):
+        # build / image_input は bmesh / bpy.data を使うので、フェイク bpy のテスト環境で
+        # import されないようここで遅延 import する(_coverage_weights と同じ理由)
+        from .costume import build as costume_build, image_input
+
+        try:
+            if self.source == "PRESET":
+                spec = costume_spec.load_preset(self.preset)
+                origin = "プリセット %s" % self.preset
+            else:
+                result = ai_bridge.spec_from_text(
+                    self.description,
+                    runner=None if self.use_ai else _refuse_ai,
+                )
+                spec = result["spec"]
+                origin = "説明文(%s)" % result["source"]
+                for note in result["parse"]["notes"]:
+                    self.report({"INFO"}, note)
+                if result["ai_error"]:
+                    self.report({"WARNING"}, "AI に頼れませんでした: %s" % result["ai_error"])
+            if self.image_path.strip():
+                for note in image_input.apply_image(
+                    spec, self.image_path, count=self.image_colors
+                ):
+                    self.report({"INFO"}, note)
+                origin += " + 画像の色"
+            spec["meters_per_unit"] = self.meters_per_unit
+            spec["assumed_height"] = self.assumed_height
+            spec = costume_spec.normalize_spec(spec)
+        except (costume_spec.SpecError, image_input.ImageInputError, ValueError) as error:
+            self.report({"ERROR"}, "spec を組み立てられませんでした: %s" % error)
+            return {"CANCELLED"}
+
+        try:
+            created = costume_build.build_costume(spec, context.scene)
+        except (costume_parts.PartError, ValueError, RuntimeError) as error:
+            self.report({"ERROR"}, "生成に失敗しました: %s" % error)
+            return {"CANCELLED"}
+
+        report = validate.costume_report(created["built"], spec)
+        message = "%s から %s: %s(頂点 %d / 面 %d / エッジ長比 %.4f)" % (
+            origin,
+            created["collection"].name,
+            report["verdict"],
+            report["totals"]["verts"],
+            report["totals"]["faces"],
+            report["edge_length_over_h"] or 0.0,
+        )
+        if report["failed"]:
+            self.report({"WARNING"}, message + " 不合格: " + ", ".join(report["failed"]))
+        else:
+            self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
+def _refuse_ai(_prompt):
+    """AI を使わない設定のときに request_spec を確実に失敗させる"""
+    raise ai_bridge.AIBridgeError("AI 利用がオフです(オペレーターのオプションで有効にできます)")
+
+
 _classes = (
     MYPLUGIN_OT_hello,
     MYPLUGIN_OT_add_cube_grid,
     MYPLUGIN_OT_fit_body_to_corset,
+    MYPLUGIN_OT_generate_costume,
 )
 
 

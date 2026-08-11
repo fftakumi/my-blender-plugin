@@ -1,0 +1,161 @@
+{
+  "schema": 1,
+  "name": "blouse",
+  "assumed_height": 1.58,
+  "ease": 0.12,
+  "meters_per_unit": 1.0,
+  "poly_budget": 4000,
+  "materials": {
+    "main": {
+      "base_color": [
+        0.82,
+        0.82,
+        0.8
+      ],
+      "roughness": 0.76,
+      "sheen": 0.22
+    },
+    "trim": {
+      "base_color": [
+        0.72,
+        0.72,
+        0.7
+      ],
+      "roughness": 0.42,
+      "sheen": 0.1
+    }
+  },
+  "parts": [
+    {
+      "type": "bodice",
+      "name": "Blouse_Bodice",
+      "material": "main",
+      "params": {
+        "shoulder_z": 0.82,
+        "length_scale": 1.0,
+        "segments": 28,
+        "rings": 12,
+        "bust_t": 0.28,
+        "waist_t": 0.62,
+        "waist_scale": 0.93,
+        "hem_scale": 0.99,
+        "neck_ease": 0.12,
+        "neck_depth_ratio": 0.85,
+        "shoulder_depth_ratio": 0.55,
+        "neck_drop_scale": 1.0,
+        "neck_fade": 0.09,
+        "armhole_segments": 2
+      }
+    },
+    {
+      "type": "sleeve",
+      "name": "Blouse_Sleeve_L",
+      "material": "main",
+      "attach_to": "Blouse_Bodice",
+      "params": {
+        "side": "l",
+        "rings": 11,
+        "sleeve_ease": 0.1,
+        "length_scale": 1.0,
+        "cuff_scale": 1.0,
+        "droop_degrees": 35.0,
+        "bicep_scale": 1.0,
+        "cap_fraction": 0.3,
+        "elbow_fraction": 0.5,
+        "cuff_start": 0.9
+      }
+    },
+    {
+      "type": "sleeve",
+      "name": "Blouse_Sleeve_R",
+      "material": "main",
+      "attach_to": "Blouse_Bodice",
+      "params": {
+        "side": "r",
+        "rings": 11,
+        "sleeve_ease": 0.1,
+        "length_scale": 1.0,
+        "cuff_scale": 1.0,
+        "droop_degrees": 35.0,
+        "bicep_scale": 1.0,
+        "cap_fraction": 0.3,
+        "elbow_fraction": 0.5,
+        "cuff_start": 0.9
+      }
+    },
+    {
+      "type": "collar",
+      "name": "Blouse_Collar",
+      "material": "main",
+      "attach_to": "Blouse_Bodice",
+      "params": {
+        "height_ratio": 0.022,
+        "rings": 3,
+        "flare": 1.06
+      }
+    },
+    {
+      "type": "collar_fall",
+      "name": "Blouse_Collar_Fall",
+      "material": "main",
+      "attach_to": "Blouse_Collar",
+      "params": {
+        "height_ratio": 0.033,
+        "rings": 4,
+        "flare": 1.5
+      }
+    },
+    {
+      "type": "placket",
+      "name": "Blouse_Placket",
+      "material": "main",
+      "attach_to": "Blouse_Bodice",
+      "params": {
+        "width": 0.019,
+        "standoff": 0.0016,
+        "bulge": 0.18,
+        "columns": 5
+      }
+    },
+    {
+      "type": "buttons",
+      "name": "Blouse_Buttons",
+      "material": "trim",
+      "attach_to": "Blouse_Placket",
+      "params": {
+        "count": 6,
+        "radius": 0.00364,
+        "segments": 16,
+        "standoff": 0.0004,
+        "top_inset": 0.06,
+        "bottom_inset": 0.1,
+        "thickness_ratio": 0.2,
+        "dish": 0.35,
+        "holes": 4
+      }
+    }
+  ],
+  "joints": [
+    {
+      "a": "Blouse_Bodice",
+      "a_ring": "armhole_l",
+      "b": "Blouse_Sleeve_L",
+      "b_ring": "top",
+      "kind": "sewn"
+    },
+    {
+      "a": "Blouse_Bodice",
+      "a_ring": "armhole_r",
+      "b": "Blouse_Sleeve_R",
+      "b_ring": "top",
+      "kind": "sewn"
+    },
+    {
+      "a": "Blouse_Bodice",
+      "a_ring": "top",
+      "b": "Blouse_Collar",
+      "b_ring": "bottom",
+      "kind": "shared"
+    }
+  ]
+}
