@@ -368,7 +368,15 @@ def test_a_cone_sleeve_fails_the_shape_gate():
     肘の判定位置は spec の elbow_fraction ではなく解剖の位置(袖丈の半分)なので、
     テーパーを早く始めても判定区間が一緒に縮んで逃げる、ということが起きない。
     """
-    normalized, built = build_blouse({"Blouse_Sleeve_L": {"elbow_fraction": 0.1}})
+    normalized, built = build_blouse(
+        {
+            "Blouse_Sleeve_L": {
+                "elbow_fraction": 0.1,  # cap まで繰り上がる
+                "cuff_start": 0.55,  # 全長のほとんどをテーパーに使う
+                "cuff_gather": 1.0,  # いせ込み無し = 袖口までまっすぐ細る
+            }
+        }
+    )
     entry = gates(built, normalized, "Blouse_Sleeve_L")
     assert "sleeve_not_cone" in entry["failed"]
 
@@ -450,3 +458,41 @@ def test_a_flat_ring_has_the_same_length_in_both_measures():
     skirt = next(m for m in skirt_built["parts"] if m.name == "Skirt_Body")
     hem = validate.ring_metrics(skirt.verts, skirt.rings["bottom"])
     assert hem["perimeter_xy"] == pytest.approx(hem["perimeter"], rel=1e-12)
+
+
+def test_the_cuff_is_visible_as_a_step_in_the_silhouette():
+    """定義 #17: 帯が一定なだけでは絵に出ない。
+
+    「幾何としては在るのに見えない」は、反省に書いた原因3(組み上がりの姿を
+    誰も見ていない)のミニチュア。段差を測れる量にして初めてゲートになる。
+    """
+    normalized, built = build_blouse()
+    entry = gates(built, normalized, "Blouse_Sleeve_L")
+    assert entry["measured_cuff_gather"] >= validate.CUFF_GATHER_MIN
+    assert "cuff_is_visible" in entry["hard"]
+
+
+def test_a_cuff_without_a_gather_fails_even_though_the_band_is_flat():
+    normalized, built = build_blouse({"Blouse_Sleeve_L": {"cuff_gather": 1.0}})
+    entry = gates(built, normalized, "Blouse_Sleeve_L")
+    assert entry["hard"]["cuff_band_is_flat"]["ok"], "帯が一定なのは変わらない"
+    assert "cuff_is_visible" in entry["failed"]
+
+
+def test_the_cuff_seam_ring_is_marked_sharp():
+    """段差だけでは陰影が繋がって縫い目に見えない"""
+    _normalized, built = build_blouse()
+    sleeve = part_named(built, "Blouse_Sleeve_L")
+    assert sleeve.sharp_rings == sleeve.design["cuff_rings"][:1]
+    assert part_named(built, "Blouse_Bodice").sharp_rings == []
+
+
+def test_sleeve_profile_gather_keeps_the_cuff_itself_at_the_product_size():
+    """いせ込みは袖口の手前を太くするだけで、カフスそのものは実寸のまま"""
+    assert modulate.sleeve_radius_profile(1.0, 0.05, 0.03, 0.5, 0.9, 1.3) == pytest.approx(0.03)
+    assert modulate.sleeve_radius_profile(0.89, 0.05, 0.03, 0.5, 0.9, 1.3) > 0.03
+
+
+def test_sleeve_profile_rejects_a_gather_below_one():
+    with pytest.raises(ValueError):
+        modulate.sleeve_radius_profile(0.5, 0.05, 0.03, 0.5, 0.9, 0.8)

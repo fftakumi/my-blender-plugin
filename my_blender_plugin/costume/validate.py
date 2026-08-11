@@ -55,6 +55,9 @@ BUTTON_THICKNESS_TOL = 0.40
 BUTTON_MIN_HOLES = 2
 #: 裾のシャツテールの最小の落差(m)。これを下回ると「水平に切った裾」と区別できない
 SHIRTTAIL_MIN_DROP = 0.01
+#: カフスの直前の周長 / カフスの周長 の下限。1.0 だと段差が無く、
+#: 帯が「一定である」ことは測れても「見えるか」は測れていない
+CUFF_GATHER_MIN = 1.10
 
 
 # ------------------------------------------------------------------ 小物
@@ -778,6 +781,14 @@ def part_report(mesh, height_units):
                 report["measured_cuff_band_step"],
                 "<= %.3f" % CUFF_BAND_STEP_MAX,
             )
+            # 定義 #17: 帯が一定なだけでは silhouette に段差が出ず、
+            # 「幾何としては在るのに絵では見えない」ままになる
+            if report["measured_cuff_gather"] is not None:
+                hard["cuff_is_visible"] = _check(
+                    report["measured_cuff_gather"] >= CUFF_GATHER_MIN,
+                    report["measured_cuff_gather"],
+                    ">= %.2f" % CUFF_GATHER_MIN,
+                )
         else:
             hard["cuff_band_exists"] = _check(False, len(design.get("cuff_rings", [])), ">= 2")
 
@@ -1091,6 +1102,7 @@ def sleeve_metrics(mesh, design):
         "measured_hold_ratio": None,
         "measured_cuff_perimeter": None,
         "measured_cuff_band_step": None,
+        "measured_cuff_gather": None,
     }
     if not mesh.ring_size or mesh.ring_count < 2:
         return result
@@ -1131,6 +1143,14 @@ def sleeve_metrics(mesh, design):
         result["measured_cuff_band_step"] = (
             (widest - min(lengths)) / widest if widest > 0 else 0.0
         )
+        # 定義 #17: カフスが**見える**こと。帯が一定なだけでは silhouette に
+        # 段差が出ず、幾何としては在るのに絵では見えない。
+        # 実物は袖のほうが太く、カフスに絞り込まれるので段差ができる
+        above = cuff[0] - 1
+        if above >= 0 and lengths[0] > 0:
+            result["measured_cuff_gather"] = (
+                result["ring_perimeters"][above] / lengths[0]
+            )
     return result
 
 

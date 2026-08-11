@@ -51,15 +51,18 @@ def _remove_existing(name, collection=None):
 
 
 def mark_sharp_folds(mesh, part_mesh):
-    """プリーツの折り線の辺をシャープにして、陰影を割る。
+    """折り線と縫い目の辺をシャープにして、陰影を割る。
 
     スムーズシェーディングだけだと浅い折り目がぼやけて「プレスした折り目」に見えない。
     実物のプリーツは折り目が立っているので、そこは陰影が切れているのが正しい。
     深さを盛って見せるより、浅い折り目のまま辺をシャープにするほうが実物に近い。
 
+    `sharp_segments` は**縦の折り線**(プリーツ)、`sharp_rings` は**横の縫い目**
+    (カフスの付け根)。カフスは silhouette の段差だけだと縫い目に見えない。
+
     戻り値: シャープにした辺の本数。
     """
-    if not part_mesh.sharp_segments:
+    if not part_mesh.sharp_segments and not part_mesh.sharp_rings:
         return 0
     lookup = {}
     for edge in mesh.edges:
@@ -70,6 +73,14 @@ def mark_sharp_folds(mesh, part_mesh):
     for segment in part_mesh.sharp_segments:
         for ring in range(ring_count - 1):
             key = frozenset((ring * ring_size + segment, (ring + 1) * ring_size + segment))
+            edge = lookup.get(key)
+            if edge is not None:
+                edge.use_edge_sharp = True
+                marked += 1
+    for ring in part_mesh.sharp_rings:
+        base = ring * ring_size
+        for segment in range(ring_size):
+            key = frozenset((base + segment, base + (segment + 1) % ring_size))
             edge = lookup.get(key)
             if edge is not None:
                 edge.use_edge_sharp = True

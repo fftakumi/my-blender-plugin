@@ -109,14 +109,23 @@ def material_report(obj):
 
 
 def crease_report(obj, part_mesh):
-    """折り目としてシャープにした辺の本数。
+    """折り目・縫い目としてシャープにした辺の本数。
 
     プリーツはスムーズシェーディングだけだと浅い折り目がぼやけて
     「プレスした折り目」に見えない。辺がシャープになっているかを数値で確かめる。
+
+    縦の折り線(`sharp_segments`)は「リング数 - 1」本ずつ、
+    横の縫い目(`sharp_rings`。カフスの付け根)は「1リングの分割数」本ずつ。
     """
     sharp = sum(1 for edge in obj.data.edges if edge.use_edge_sharp)
-    expected = len(part_mesh.sharp_segments) * max(part_mesh.ring_count - 1, 0)
-    return {"sharp_edges": sharp, "expected": expected, "fold_segments": len(part_mesh.sharp_segments)}
+    folds = len(part_mesh.sharp_segments) * max(part_mesh.ring_count - 1, 0)
+    seams = len(part_mesh.sharp_rings) * part_mesh.ring_size
+    return {
+        "sharp_edges": sharp,
+        "expected": folds + seams,
+        "fold_segments": len(part_mesh.sharp_segments),
+        "seam_rings": len(part_mesh.sharp_rings),
+    }
 
 
 def object_geometry(obj):

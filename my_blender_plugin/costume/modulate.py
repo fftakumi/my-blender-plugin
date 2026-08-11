@@ -295,27 +295,35 @@ def circle_angles(segments):
 SLEEVE_ELBOW_T = 0.5
 
 
-def sleeve_radius_profile(t, bicep_radius, cuff_radius, elbow, cuff_start):
-    """袖の半径。**肘まで二の腕の太さを保ち、袖口へ細り、最後は一定(カフス)**。
+def sleeve_radius_profile(t, bicep_radius, cuff_radius, elbow, cuff_start, gather=1.0):
+    """袖の半径。**肘まで二の腕の太さを保ち、袖口で絞られ、最後は一定(カフス)**。
 
     全長を滑らかに細めると針のような円錐になり、袖に見えない(定義 #11)。
     実物の袖は肘までほぼ同じ太さで、前腕で絞られ、カフスは一定幅の帯で終わる。
 
         t <= elbow                : 二の腕の太さのまま
-        elbow < t < cuff_start    : 袖口へ滑らかに細る
+        elbow < t < cuff_start    : 袖口の手前(カフス × gather)へ滑らかに細る
         t >= cuff_start           : 一定 = カフスの帯(定義 #12)
+
+    `gather` は **袖をカフスに縫い込むときのいせ込み**。1.0 だとカフスが
+    silhouette に段差を作らず、幾何としては帯が在るのに絵では見えない
+    (「幾何としては在るが見えない」= 反省の原因3 のミニチュア)。
+    実物は袖のほうが太く、カフスに絞り込まれるので段差ができる。
     """
     if not 0.0 <= elbow < cuff_start <= 1.0:
         raise ValueError(
             "0 <= elbow < cuff_start <= 1 にしてください: elbow=%r, cuff_start=%r"
             % (elbow, cuff_start)
         )
+    if gather < 1.0:
+        raise ValueError("gather は 1.0 以上にしてください: %r" % (gather,))
     if t <= elbow:
         return bicep_radius
     if t >= cuff_start:
         return cuff_radius
     local = (t - elbow) / (cuff_start - elbow)
-    return bicep_radius + (cuff_radius - bicep_radius) * smoothstep(local)
+    gathered = cuff_radius * gather
+    return bicep_radius + (gathered - bicep_radius) * smoothstep(local)
 
 
 def neckline_drop(angle, front_drop, back_drop, front_angle):

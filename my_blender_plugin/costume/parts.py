@@ -563,7 +563,7 @@ def build_sleeve(part, table, scale, host=None):
         # 全長を滑らかに細めると針のような円錐になる(定義 #11)。
         # 肘まで二の腕の太さを保ち、そこから絞り、最後は一定 = カフス(定義 #12)
         target_radius = modulate.sleeve_radius_profile(
-            t, bicep_radius, cuff_radius, elbow, cuff_start
+            t, bicep_radius, cuff_radius, elbow, cuff_start, params["cuff_gather"]
         )
         axial_plane = t * length
         points = []
@@ -583,6 +583,9 @@ def build_sleeve(part, table, scale, host=None):
 
     mesh = kernels.loft_rings(ring_points, name=part["name"], closed=True, tubular=False)
     mesh.material = part["material"]
+    cuff_rings = [index for index, t in enumerate(ts) if t >= cuff_start]
+    # カフスの付け根は縫い目。段差だけだと陰影が繋がって縫い目に見えない
+    mesh.sharp_rings = cuff_rings[:1]
     mesh.design = {
         "top_perimeter": armhole_perimeter,
         "bottom_perimeter": 2.0 * math.pi * cuff_radius,
@@ -614,7 +617,8 @@ def build_sleeve(part, table, scale, host=None):
         # 縮んでゲートが逃げ、円錐が通ってしまう
         "hold_rings": _hold_ring_indices(ts, cap, modulate.SLEEVE_ELBOW_T),
         # カフスの帯(一定半径)に入るリング番号。2本以上必要
-        "cuff_rings": [index for index, t in enumerate(ts) if t >= cuff_start],
+        "cuff_rings": cuff_rings,
+        "cuff_gather": params["cuff_gather"],
     }
     return mesh
 

@@ -36,6 +36,9 @@ class PartMesh:
     #: 折り目として陰影を割るべき分割位置(プリーツの折り線)。
     #: スムーズシェーディングだけだと浅い折り目がぼやけて「プレスした折り目」に見えない
     sharp_segments: list = field(default_factory=list)
+    #: 縫い目として陰影を割るべきリング番号(カフスの付け根など)。
+    #: sharp_segments が「縦の折り線」なのに対し、こちらは「横の縫い目」
+    sharp_rings: list = field(default_factory=list)
     #: 面を抜いて穴(袖ぐり)を開けたか。開けると頂点を詰め直すので
     #: 「リング番号 × 分割数」で頂点を引く計算が使えなくなる
     holed: bool = False
