@@ -343,6 +343,33 @@ def neckline_drop(angle, front_drop, back_drop, front_angle):
     return front_drop * max(0.0, phase) + back_drop * max(0.0, -phase)
 
 
+def bust_projection(angle, t, amount, angular_width, bust_t, axial_width, front_angle):
+    """胸のふくらみ。前中心まわり・バスト位置まわりに局所的な出っぱりを作る(定義 #18)。
+
+    断面を楕円にしただけの胴は**メンズシャツ**にしか見えない。ブラウスとの違いは
+    前面がバストの高さで前へ出ていること。角度方向と軸方向の両方で減衰する
+    「こぶ」にするので、袖ぐり(角度 0 と π)にも裾にも影響しない。
+
+    戻り値は**半径に足す量**(メートル)。角度・軸方向とも余弦の山で、
+    範囲の外はきっかり 0 になる(裾までうねると別の破綻になる)。
+    """
+    if amount < 0.0:
+        raise ValueError("amount は 0 以上にしてください: %r" % (amount,))
+    if angular_width <= 0.0 or axial_width <= 0.0:
+        raise ValueError(
+            "幅は正の数にしてください: angular=%r, axial=%r" % (angular_width, axial_width)
+        )
+    delta = (angle - front_angle + math.pi) % (2.0 * math.pi) - math.pi
+    if abs(delta) >= angular_width:
+        return 0.0
+    axial = abs(t - bust_t)
+    if axial >= axial_width:
+        return 0.0
+    lobe = 0.5 * (1.0 + math.cos(math.pi * delta / angular_width))
+    band = 0.5 * (1.0 + math.cos(math.pi * axial / axial_width))
+    return amount * lobe * band
+
+
 def shirttail_drop(angle, back_drop, front_ratio, front_angle):
     """裾のシャツテール。**脇でいちばん高く、前後の中心が下がる**(定義 #16)。
 

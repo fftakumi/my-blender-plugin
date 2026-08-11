@@ -58,6 +58,9 @@ SHIRTTAIL_MIN_DROP = 0.01
 #: カフスの直前の周長 / カフスの周長 の下限。1.0 だと段差が無く、
 #: 帯が「一定である」ことは測れても「見えるか」は測れていない
 CUFF_GATHER_MIN = 1.10
+#: 胸のふくらみが裾の前面より前へ出るべき最小量(m)。**設計値**。
+#: これを下回ると楕円断面だけの胴(= メンズシャツ)と区別できない
+BUST_PROJECTION_MIN = 0.015
 
 
 # ------------------------------------------------------------------ 小物
@@ -740,6 +743,22 @@ def part_report(mesh, height_units):
                 ),
                 "前後とも脇より %.3f 以上下がる" % SHIRTTAIL_MIN_DROP,
             )
+        # 定義 #18。設計値が 0 でもゲートが消えないよう "in design" で常に判定し、
+        # かつ**下限**を見る(0 にすると「設計 0 = 実測 0」で通ってしまう)
+        if (
+            "bust_projection_over_hem" in design
+            and report["measured_bust_projection"] is not None
+        ):
+            hard["bust_projection"] = _check(
+                report["measured_bust_projection"] >= BUST_PROJECTION_MIN,
+                report["measured_bust_projection"],
+                ">= %.3f" % BUST_PROJECTION_MIN,
+            )
+            hard["bust_is_above_the_waist"] = _check(
+                (report["measured_bust_z_fraction"] or 0.0) >= 0.5,
+                report["measured_bust_z_fraction"],
+                ">= 0.5(丈の上半分)",
+            )
         if (
             design.get("shoulder_slope_degrees")
             and report["measured_shoulder_slope_degrees"] is not None
@@ -1010,6 +1029,8 @@ def bodice_metrics(mesh, design):
         "measured_garment_length": None,
         "measured_shirttail_drop": None,
         "measured_shirttail_front_drop": None,
+        "measured_bust_projection": None,
+        "measured_bust_z_fraction": None,
     }
 
     # 定義 #16: 裾は脇がいちばん高く、前後の中心が下がる
@@ -1021,6 +1042,16 @@ def bodice_metrics(mesh, design):
         back = max(points, key=lambda point: point[1])
         result["measured_shirttail_drop"] = side[2] - back[2]
         result["measured_shirttail_front_drop"] = side[2] - front[2]
+
+        # 定義 #18: 胸のふくらみ。メッシュ全体でいちばん前に出ている点が、
+        # 裾の前面よりどれだけ前か。楕円断面だけの胴だとほぼ 0 になる。
+        # 高さも見る(いちばん前が裾だったら、それはふくらみではない)
+        nose = min(mesh.verts, key=lambda point: point[1])
+        result["measured_bust_projection"] = front[1] - nose[1]
+        zs = [point[2] for point in mesh.verts]
+        span = max(zs) - min(zs)
+        if span > 0:
+            result["measured_bust_z_fraction"] = (nose[2] - min(zs)) / span
 
     shoulder = mesh.rings.get("shoulder")
     if shoulder:

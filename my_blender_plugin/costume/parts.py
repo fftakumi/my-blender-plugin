@@ -362,15 +362,39 @@ def build_bodice(part, table, scale):
             )
         )
 
-    ring_points = [
-        kernels.ring_from_polar(
-            [semi * scale] * segments,
-            angles,
-            [z * scale for z in zs],
-            depth_ratio=depth,
+    # 胸のふくらみ(定義 #18)。楕円断面だけの胴はメンズシャツにしか見えない。
+    # 角度方向・軸方向とも局所的な山にするので、袖ぐりにも裾にも触れない
+    bust_amount = params["bust_projection"] * height
+    bust_angular = math.radians(params["bust_angular_degrees"])
+    bust_axial = params["bust_axial_width"]
+
+    def bust_bulge(angle, t):
+        return modulate.bust_projection(
+            angle, t, bust_amount, bust_angular, bust_t, bust_axial, FRONT_ANGLE
         )
-        for zs, _front_z, semi, depth in rows
-    ]
+
+    ring_points = []
+    front_profile = []
+    for index, (zs, front_z, semi, depth) in enumerate(rows):
+        # rows[0] と rows[1] は襟ぐりと肩線。胴の t は rows[2] から
+        t = 0.0 if index < 2 else (index - 1) / (body_rings - 1)
+        # ふくらみは y 方向(前)へ出すので、depth_ratio を割り戻して半径に足す
+        radii = [
+            (semi + bust_bulge(angle, t) / max(depth, 1e-6)) * scale for angle in angles
+        ]
+        ring_points.append(
+            kernels.ring_from_polar(
+                radii, angles, [z * scale for z in zs], depth_ratio=depth
+            )
+        )
+        # 前立てが乗る面。ふくらみのぶんも前へ出るので、ここで足しておかないと
+        # 前立てが胸から浮く(あるいは中へ食い込む)
+        front_profile.append(
+            (
+                front_z * scale,
+                -(semi * depth + bust_bulge(FRONT_ANGLE, t)) * scale,
+            )
+        )
 
     # 袖ぐり: 肩線の直下(リング1と2の間)から、袖ぐり深さのところまで(定義 #4)
     armhole_depth = table["armhole_depth"]
@@ -431,10 +455,14 @@ def build_bodice(part, table, scale):
         "shirttail_drop": tail_back * scale,
         "shirttail_front_ratio": tail_front_ratio,
         # 前立てとボタンが乗る前中心の面。(z, 前面の y) を上から下へ
-        "front_profile": [
-            (front_z * scale, -semi * depth * scale)
-            for _zs, front_z, semi, depth in rows
-        ],
+        "front_profile": front_profile,
+        # --- 定義 #18(胸のふくらみ) ---
+        # 裾の前面より前へどれだけ出るか。楕円断面だけの胴だとほぼ 0 になる
+        "bust_projection_over_hem": (
+            (bust_semi * body_depth + bust_amount) - hem_semi * body_depth
+        )
+        * scale,
+        "bust_projection": bust_amount * scale,
         # 前開きの隙間の最大幅。前立てはこれより広くないと隙間が見える(定義 #13)
         "front_gap_width": max(
             2.0 * semi * math.sin(gap_angle * 0.5) for _zs, _front_z, semi, _depth in rows

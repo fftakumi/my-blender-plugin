@@ -496,3 +496,55 @@ def test_sleeve_profile_gather_keeps_the_cuff_itself_at_the_product_size():
 def test_sleeve_profile_rejects_a_gather_below_one():
     with pytest.raises(ValueError):
         modulate.sleeve_radius_profile(0.5, 0.05, 0.03, 0.5, 0.9, 0.8)
+
+
+def test_bust_projection_is_a_local_bump_not_a_global_swell():
+    """定義 #18: 角度方向にも軸方向にも局所的。袖ぐりにも裾にも触れない"""
+    front = -math.pi / 2
+    peak = modulate.bust_projection(front, 0.3, 0.03, 1.0, 0.3, 0.25, front)
+    assert peak == pytest.approx(0.03)
+    # 袖ぐりの角度(0 と π)には出ない
+    for angle in (0.0, math.pi):
+        assert modulate.bust_projection(angle, 0.3, 0.03, 1.0, 0.3, 0.25, front) == 0.0
+    # 裾(t=1)にも出ない
+    assert modulate.bust_projection(front, 1.0, 0.03, 1.0, 0.3, 0.25, front) == 0.0
+
+
+def test_bust_projection_rejects_bad_widths():
+    with pytest.raises(ValueError):
+        modulate.bust_projection(0.0, 0.3, 0.03, 0.0, 0.3, 0.25, 0.0)
+    with pytest.raises(ValueError):
+        modulate.bust_projection(0.0, 0.3, -0.01, 1.0, 0.3, 0.25, 0.0)
+
+
+def test_the_bodice_has_a_bust_above_the_waist():
+    """定義 #18: 楕円断面だけの胴はメンズシャツにしか見えない"""
+    normalized, built = build_blouse()
+    entry = gates(built, normalized, "Blouse_Bodice")
+    assert entry["measured_bust_projection"] >= validate.BUST_PROJECTION_MIN
+    assert entry["measured_bust_z_fraction"] >= 0.5
+
+
+def test_a_bodice_without_a_bust_fails():
+    """設計値を 0 にしても「設計 0 = 実測 0」で通らないこと"""
+    normalized, built = build_blouse({"Blouse_Bodice": {"bust_projection": 0.0}})
+    entry = gates(built, normalized, "Blouse_Bodice")
+    assert "bust_projection" in entry["failed"]
+
+
+def test_the_placket_follows_the_bust_without_cutting_into_it():
+    """前立ては胸のふくらみにも乗る。乗らないと浮くか食い込む"""
+    normalized, built = build_blouse()
+    report = validate.costume_report(built, normalized)
+    pair = next(
+        item
+        for item in report["part_pairs"]
+        if {item["a"], item["b"]} == {"Blouse_Bodice", "Blouse_Placket"}
+    )
+    assert pair["intersections"] == 0
+    placket = part_named(built, "Blouse_Placket")
+    # 前立てのいちばん前が、胸のふくらみのぶんだけ前へ出ていること
+    bodice = part_named(built, "Blouse_Bodice")
+    assert placket.design["placket_front_y"] < min(
+        y for _z, y in bodice.design["front_profile"][-3:]
+    )
