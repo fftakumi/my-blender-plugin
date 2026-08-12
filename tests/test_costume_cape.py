@@ -92,13 +92,38 @@ def test_parse_reaches_the_cape_preset():
     assert parse_text.parse("cape")["base_preset"] == "cape"
 
 
-# ---------------------------------------- 層3a: spec を壊すとゲートが落ちる
+# ---------------------------------------- 層2続き: 肩の張り(ハンガー型)
 
 
-def test_a_cape_without_flare_is_not_a_cape():
-    normalized, built = build_cape({"Cape_Body": {"flare": 1.0}})
+def test_cape_has_shoulders():
+    """ただの円錐はスカートに見える(ブラインド識別で実証)。肩線の位置で
+    x 差し渡しが肩幅×かぶりに一致すること"""
+    normalized, built = build_cape()
     entry = gates(built, normalized, "Cape_Body")
-    assert "cape_flares_from_the_shoulder" in entry["failed"]
+    table = built["sizing"]
+    expected = table["shoulder_width"] * parts.CAPE_SHOULDER_COVER * 2.0
+    assert entry["measured_shoulder_span"] == pytest.approx(expected, rel=0.05)
+    assert entry["hard"]["cape_sits_on_the_shoulders"]["ok"]
+
+
+def test_narrowing_the_shoulders_in_the_mesh_breaks_the_shoulder_gate():
+    """design はそのまま、肩まわりのリング行だけ細める → 実測ゲートが捕まえる"""
+    normalized, built = build_cape()
+    cape = next(mesh for mesh in built["parts"] if mesh.name == "Cape_Body")
+    tampered = copy.deepcopy(cape)
+    size, count = tampered.ring_size, tampered.ring_count
+    shoulder_rows = {
+        index
+        for row in range(count)
+        if row / (count - 1) <= tampered.design["cape_shoulder_t"] * 1.7
+        for index in range(row * size, (row + 1) * size)
+    }
+    tampered.verts = [
+        (x * 0.8, y, z) if index in shoulder_rows else (x, y, z)
+        for index, (x, y, z) in enumerate(tampered.verts)
+    ]
+    after = validate.part_report(tampered, 1.58)
+    assert "cape_sits_on_the_shoulders" in after["failed"]
 
 
 # ---------------------------------------- 層3b: メッシュだけ壊すとゲートが落ちる

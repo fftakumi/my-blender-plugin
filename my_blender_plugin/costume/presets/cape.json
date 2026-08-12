@@ -23,8 +23,8 @@
         "segments": 28,
         "rings": 12,
         "neck_ease": 0.35,
-        "flare": 2.0,
-        "flare_curve": 1.2,
+        "flare": 1.5,
+        "flare_curve": 1.0,
         "front_open_degrees": 40.0
       }
     },

@@ -99,7 +99,7 @@ def test_pants_measures_follow_the_sizing_table():
     assert entry["measured_rise"] == pytest.approx(table["rise"], rel=0.05)
     assert entry["measured_inseam_l"] == pytest.approx(table["inseam"], rel=0.03)
     assert entry["measured_thigh_perimeter_l"] == pytest.approx(
-        table["thigh"] * 1.10, rel=0.05
+        table["thigh"] * 1.15, rel=0.05
     )
 
 

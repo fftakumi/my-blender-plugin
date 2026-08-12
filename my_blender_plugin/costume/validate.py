@@ -562,19 +562,31 @@ def open_arc_length(verts, ring_indices):
     return sum(_distance(points[index], points[index - 1]) for index in range(1, len(points)))
 
 
-def cape_metrics(mesh):
+def cape_metrics(mesh, shoulder_t=None):
     """ケープの実測(メッシュだけから出す。生成側の申告は使わない)"""
     top = mesh.rings.get("top") or []
     bottom = mesh.rings.get("bottom") or []
     top_arc = open_arc_length(mesh.verts, top)
     hem_arc = open_arc_length(mesh.verts, bottom)
     hem_gap = _distance(mesh.verts[bottom[0]], mesh.verts[bottom[-1]]) if bottom else 0.0
-    return {
+    result = {
         "measured_top_arc": top_arc,
         "measured_hem_arc": hem_arc,
         "measured_hem_gap": hem_gap,
         "measured_cape_flare": (hem_arc / top_arc) if top_arc > 0.0 else 0.0,
     }
+    # 肩の張り: 肩線の近傍(t が shoulder_t の 1.7 倍まで)のリング行の
+    # x 差し渡しの最大。行は ring_size × ring_count の添字構造から復元する
+    if shoulder_t is not None and mesh.ring_count > 1:
+        size, count = mesh.ring_size, mesh.ring_count
+        span = 0.0
+        for row in range(count):
+            if row / (count - 1) > shoulder_t * 1.7:
+                break
+            xs = [mesh.verts[index][0] for index in range(row * size, (row + 1) * size)]
+            span = max(span, max(xs) - min(xs))
+        result["measured_shoulder_span"] = span
+    return result
 
 
 def hood_metrics(mesh):
@@ -751,7 +763,12 @@ def part_report(mesh, height_units):
             )
     # ---- ケープの定義(docs/garments.md)を検証項目にしたもの ----
     if design.get("cape_top_arc"):
-        report.update(cape_metrics(mesh))
+        report.update(cape_metrics(mesh, design.get("cape_shoulder_t")))
+        # 肩の張り(ハンガー型)。ただの円錐はスカートに見える(ブラインド識別で実証)
+        if design.get("cape_shoulder_span") and "measured_shoulder_span" in report:
+            hard["cape_sits_on_the_shoulders"] = _within(
+                report["measured_shoulder_span"], design["cape_shoulder_span"], DIM_TOL
+            )
         # 上端の弧長 = 首回り×(1+ゆとり)から前開きの楔を除いた製図値
         hard["cape_top_arc"] = _within(
             report["measured_top_arc"], design["cape_top_arc"], DIM_TOL

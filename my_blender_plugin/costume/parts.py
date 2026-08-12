@@ -181,12 +181,23 @@ def build_waistband(part, table, scale):
     return mesh
 
 
+#: ケープの首→肩線の落差 /H。**設計値**(bodice の肩傾斜と釣り合う値)。
+#: 検証の肩ゲートが見る位置なので spec には持たせない(SLEEVE_ELBOW_T と同じ理屈)
+CAPE_SHOULDER_DROP = 0.045
+#: 肩を覆う布の半幅 / 肩幅。**設計値**(肩の上に布が少しかぶる)
+CAPE_SHOULDER_COVER = 0.55
+
+
 def build_cape(part, table, scale):
-    """ケープ。首まわりから肩の上を通って裾へ広がる、前の開いたシート。
+    """ケープ。首まわり→**肩の張り**→裾へ広がる、前の開いたシート。
 
     定義は docs/garments.md。bodice の builder は使わない — bodice は design に
     shoulder_width 等を入れるのでブラウス固有のゲート(シャツテール・胸のふくらみ・
     製品着丈)が発火する。ケープはケープの design キーだけを申告する。
+
+    **ただの円錐はスカートと区別が付かない**(ブラインド識別のテストで実証)。
+    首から肩線までの短い区間で幅を肩幅まで一気に広げ、そこから flare で裾へ
+    広げる「ハンガー型」のプロファイルにする。肩の折れがケープをケープに見せる。
 
     リングは水平のまま(前下がりは入れない)。上端の弧長は「首回り×(1+ゆとり)の
     周長から前開きの楔ぶんを除いた長さ」= 製図の値として design に入れ、実測と
@@ -212,13 +223,24 @@ def build_cape(part, table, scale):
         FRONT_ANGLE + 2.0 * math.pi - gap_angle * 0.5,
     )
 
+    # 肩線: 首の下 CAPE_SHOULDER_DROP、半幅は肩幅 × CAPE_SHOULDER_COVER(製図値)
+    shoulder_semi = table["shoulder_width"] * CAPE_SHOULDER_COVER
+    shoulder_perimeter = modulate.ellipse_perimeter(shoulder_semi, depth_ratio)
+    t_shoulder = min(0.5, CAPE_SHOULDER_DROP * height / length)
+
+    def perimeter_at(t):
+        if t <= t_shoulder:
+            local = modulate.smoothstep(t / t_shoulder)
+            return neck_perimeter + (shoulder_perimeter - neck_perimeter) * local
+        local = (t - t_shoulder) / (1.0 - t_shoulder)
+        return shoulder_perimeter * modulate.flare_multiplier(
+            local, flare, params["flare_curve"]
+        )
+
     ring_points = []
     hem_semi = None
     for t in modulate.axis_fractions(params["rings"]):
-        perimeter = neck_perimeter * modulate.flare_multiplier(
-            t, flare, params["flare_curve"]
-        )
-        semi = modulate.ellipse_semi_major(perimeter, depth_ratio)
+        semi = modulate.ellipse_semi_major(perimeter_at(t), depth_ratio)
         hem_semi = semi
         ring_points.append(
             kernels.ring_from_polar(
@@ -250,7 +272,11 @@ def build_cape(part, table, scale):
         "boundary_verts": None,
         # ---- ケープ固有(validate 側のゲートが発火する)----
         "cape_top_arc": top_arc * scale,
-        "cape_flare": flare,
+        # 裾弧長 / 上端弧長 の期待値。弧の角度割合は全リング同じなので周長比と一致
+        "cape_flare": perimeter_at(1.0) / neck_perimeter,
+        # 肩の張り(ハンガー型の肩線)の x 差し渡し。製図値 = 肩幅×かぶり×2
+        "cape_shoulder_span": 2.0 * shoulder_semi * scale,
+        "cape_shoulder_t": t_shoulder,
         # 裾の開き幅(前開き端点間の距離)。端点は前中心 ±gap/2 にあるので
         # x 成分が支配的で、弦長 ≈ 2·半径·sin(gap/2)
         "cape_hem_gap": 2.0 * hem_semi * math.sin(gap_angle * 0.5) * scale,
