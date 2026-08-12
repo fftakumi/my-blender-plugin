@@ -94,6 +94,18 @@ def test_the_face_gap_floor_scales_with_the_requested_opening():
     assert wide["failed"] == [] and narrow["failed"] == []
 
 
+def test_blend_past_the_taper_start_is_rejected_by_the_spec():
+    """blend > taper_start は頭の太さに届く前に絞り始める組み合わせで、
+    hood_wraps_the_head が必ず落ちる(合法範囲内の誤検知だった。PR #8 レビュー)。
+    spec の段階で明示エラーにする(エラー文が AI への修正指示になる)"""
+    spec = spec_module.load_preset("hooded_cape")
+    hood = next(part for part in spec["parts"] if part["type"] == "hood")
+    hood["params"]["blend"] = 0.8  # taper_start 既定 0.65 より大きい
+    with pytest.raises(spec_module.SpecError) as error:
+        spec_module.normalize_spec(spec)
+    assert "taper_start" in str(error.value)
+
+
 # ---------------------------------------- 層3b: メッシュだけ壊すとゲートが落ちる
 
 

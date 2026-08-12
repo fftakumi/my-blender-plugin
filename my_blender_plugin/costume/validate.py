@@ -575,17 +575,20 @@ def cape_metrics(mesh, shoulder_t=None):
         "measured_hem_gap": hem_gap,
         "measured_cape_flare": (hem_arc / top_arc) if top_arc > 0.0 else 0.0,
     }
-    # 肩の張り: 肩線の近傍(t が shoulder_t の 1.7 倍まで)のリング行の
-    # x 差し渡しの最大。行は ring_size × ring_count の添字構造から復元する
+    # 肩の張り: **肩線に最も近いリング行だけ**の x 差し渡し。
+    # 「肩線の1.7倍までの窓の最大」で測ると、flare で広がり始めた行が窓に入り、
+    # リングが密・flare が急・丈が短いだけで設計値を超える誤検知になる
+    # (合法な spec の AI 出力が _prebuild_check で捨てられていた。PR #8 レビュー)。
+    # 行は ring_size × ring_count の添字構造から復元する
     if shoulder_t is not None and mesh.ring_count > 1:
         size, count = mesh.ring_size, mesh.ring_count
-        span = 0.0
-        for row in range(count):
-            if row / (count - 1) > shoulder_t * 1.7:
-                break
-            xs = [mesh.verts[index][0] for index in range(row * size, (row + 1) * size)]
-            span = max(span, max(xs) - min(xs))
-        result["measured_shoulder_span"] = span
+        nearest = min(range(count), key=lambda row: abs(row / (count - 1) - shoulder_t))
+        result["shoulder_row_t"] = nearest / (count - 1)
+        xs = [
+            mesh.verts[index][0]
+            for index in range(nearest * size, (nearest + 1) * size)
+        ]
+        result["measured_shoulder_span"] = max(xs) - min(xs)
     return result
 
 
@@ -697,6 +700,7 @@ def part_report(mesh, height_units):
     }
 
     hard = {}
+    warn = {}
     hard["nonmanifold"] = _check(topo["nonmanifold_edges"] == 0, topo["nonmanifold_edges"], 0)
     hard["loose_verts"] = _check(topo["loose_verts"] == 0, topo["loose_verts"], 0)
     hard["winding"] = _check(
@@ -765,10 +769,17 @@ def part_report(mesh, height_units):
     if design.get("cape_top_arc"):
         report.update(cape_metrics(mesh, design.get("cape_shoulder_t")))
         # 肩の張り(ハンガー型)。ただの円錐はスカートに見える(ブラインド識別で実証)
-        if design.get("cape_shoulder_span") and "measured_shoulder_span" in report:
-            hard["cape_sits_on_the_shoulders"] = _within(
-                report["measured_shoulder_span"], design["cape_shoulder_span"], DIM_TOL
-            )
+        if "cape_shoulder_span" in design:
+            if design["cape_shoulder_span"] and "measured_shoulder_span" in report:
+                hard["cape_sits_on_the_shoulders"] = _within(
+                    report["measured_shoulder_span"], design["cape_shoulder_span"], DIM_TOL
+                )
+            else:
+                # リング割りが粗くて肩線の近くに行が無い(builder が設計値を
+                # None にしている)。黙ってゲートを消さず warn に出す
+                warn["cape_shoulder_row_missing"] = _check(
+                    False, report.get("shoulder_row_t"), "肩線の近くにリング行が要る"
+                )
         # 上端の弧長 = 首回り×(1+ゆとり)から前開きの楔を除いた製図値
         hard["cape_top_arc"] = _within(
             report["measured_top_arc"], design["cape_top_arc"], DIM_TOL
@@ -1085,7 +1096,6 @@ def part_report(mesh, height_units):
     # (costume_report)で行う。パーツ単位の値は内訳として報告するだけ。
     report["_edge_lengths"] = all_lengths
 
-    warn = {}
     # CV は周方向と軸方向を分けて見る(混ぜると縦横比を不均一さと誤認する)
     for kind, lengths in (("ring", ring_lengths), ("axial", axial_lengths)):
         cv = _stats(lengths)["cv"]

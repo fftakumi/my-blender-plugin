@@ -122,6 +122,17 @@ def test_parse_reaches_the_pants_preset():
     assert parse_text.parse("スラックス")["base_preset"] == "pants"
 
 
+def test_the_thigh_gate_survives_a_coarse_leg_grid():
+    """保持区間 [blend, THIGH_HOLD_T] に行が乗らない粗い割りでも thigh ゲートが
+    消えないこと(消えると「針の脚」の網に穴が開く。PR #8 レビュー)。
+    設計値はその行のプロファイル値に切り替わる"""
+    for leg_rings in (3, 4, 6):
+        normalized, built = build_pants({"Pants_Body": {"leg_rings": leg_rings}})
+        report, entry = pants_entry(built, normalized)
+        assert "pants_thigh_l" in entry["hard"], leg_rings
+        assert report["failed"] == [], (leg_rings, report["failed"])
+
+
 # ---------------------------------------- 層3a: spec を壊すとゲートが落ちる
 
 

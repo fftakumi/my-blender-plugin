@@ -9,6 +9,8 @@ import hashlib
 import json
 import os
 
+from . import modulate as _modulate
+
 SCHEMA_VERSION = 1
 
 #: 配布物に同梱する spec プリセットの置き場(zip に入る位置に置く)
@@ -191,9 +193,9 @@ _PANTS = {
     "thigh_ease": (float, 0.10, 0.0, 1.0),  # わたりに掛けるゆとり
     "knee_scale": (float, 1.0, 0.5, 2.0),  # 膝周 / サイズ表の膝周
     "hem_scale": (float, 1.0, 0.3, 3.0),  # 裾周 / サイズ表の裾周(>1 でワイドパンツ)
-    # 分岐リング → 円形の脚へ馴染ませる区間 / 股下。太もも保持区間(0.3)より
-    # 手前で馴染み切らないと thigh の検証リングが円にならないので上限 0.3
-    "blend": (float, 0.25, 0.05, 0.3),
+    # 分岐リング → 円形の脚へ馴染ませる区間 / 股下。太もも保持区間より手前で
+    # 馴染み切らないと thigh の検証リングが円にならないので、上限は保持区間の定数
+    "blend": (float, 0.25, 0.05, _modulate.THIGH_HOLD_T),
 }
 
 PART_SCHEMAS = {
@@ -359,11 +361,24 @@ def _modulation_errors(part, where):
     エラーにする。
     """
     params = part.get("params") or {}
+    errors = []
+
+    if part.get("type") == "hood":
+        blend = params.get("blend") or 0.0
+        taper = params.get("taper_start") or 1.0
+        if blend > taper:
+            # 円へ馴染み切る前に先端へ絞り始めると頭の太さに到達せず、
+            # hood_wraps_the_head が必ず落ちる(合法な範囲の組み合わせで
+            # 起きる誤検知だった。PR #8 レビュー)。spec の段階で止める
+            errors.append(
+                "%s: hood の blend(%.2f)は taper_start(%.2f)以下にしてください"
+                "(絞り始める前に頭の太さへ届かせる)" % (where, blend, taper)
+            )
+
     segments = params.get("segments")
     if not segments:
-        return []
+        return errors
 
-    errors = []
     if part.get("type") == "pants" and segments % 4 != 0:
         # 股を前後中心で割るので、前中心・後ろ中心・両脇に頂点が要る。
         # 黙って丸めない — このエラー文がそのまま AI への修正指示になる

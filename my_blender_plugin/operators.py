@@ -604,14 +604,19 @@ class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
                 )
                 spec = result["spec"]
                 origin = "説明文(%s)" % result["source"]
-                for note in result["parse"]["notes"]:
-                    self.report({"INFO"}, note)
+                # 辞書解析の notes は辞書結果を使ったときだけ出す。AI 採用時に
+                # 「種類を特定できなかった」等が INFO に出ると紛らわしい
+                if result["source"] == "keywords":
+                    for note in result["parse"]["notes"]:
+                        self.report({"INFO"}, note)
                 for item in result["unsupported"]:
                     self.report({"INFO"}, "AI: %s(spec からは省いた)" % item)
                 if result["fallback_warning"]:
                     self.report({"WARNING"}, result["fallback_warning"])
                 elif result["ai_error"]:
-                    self.report({"WARNING"}, "AI に頼れませんでした: %s" % result["ai_error"])
+                    # ユーザーが自分でオフにした場合は異常ではないので INFO
+                    level = {"INFO"} if not self.use_ai else {"WARNING"}
+                    self.report(level, "AI に頼れませんでした: %s" % result["ai_error"])
                 if result["explicit_height"] is not None:
                     height = result["explicit_height"]
                     self.report(

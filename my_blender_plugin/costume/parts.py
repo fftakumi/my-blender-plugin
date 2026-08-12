@@ -274,13 +274,29 @@ def build_cape(part, table, scale):
         "cape_top_arc": top_arc * scale,
         # 裾弧長 / 上端弧長 の期待値。弧の角度割合は全リング同じなので周長比と一致
         "cape_flare": perimeter_at(1.0) / neck_perimeter,
-        # 肩の張り(ハンガー型の肩線)の x 差し渡し。製図値 = 肩幅×かぶり×2
-        "cape_shoulder_span": 2.0 * shoulder_semi * scale,
-        "cape_shoulder_t": t_shoulder,
         # 裾の開き幅(前開き端点間の距離)。端点は前中心 ±gap/2 にあるので
         # x 成分が支配的で、弦長 ≈ 2·半径·sin(gap/2)
         "cape_hem_gap": 2.0 * hem_semi * math.sin(gap_angle * 0.5) * scale,
     }
+    # 肩の張りの設計値は**肩線に最も近いリング行へスナップ**して出す。
+    # 理論位置(t_shoulder)のままだと、格子1個ぶんのずれに flare の成長が乗って
+    # 合法な spec で誤検知した(PR #8 レビュー: rings=20 / flare=3.0 / length=0.1)。
+    # 検証側は同じ行を測るので格子誤差が消える(パンツの thigh_target と同じ手口)
+    rings_count = params["rings"]
+    row = min(
+        range(rings_count),
+        key=lambda index: abs(index / (rings_count - 1) - t_shoulder),
+    )
+    t_row = row / (rings_count - 1)
+    if abs(t_row - t_shoulder) <= 0.35 * t_shoulder:
+        mesh.design["cape_shoulder_t"] = t_row
+        mesh.design["cape_shoulder_span"] = (
+            2.0 * modulate.ellipse_semi_major(perimeter_at(t_row), depth_ratio) * scale
+        )
+    else:
+        # リング割りが粗くて肩線の近くに行が無い。黙って消さず warn 側で知らせる
+        mesh.design["cape_shoulder_t"] = t_shoulder
+        mesh.design["cape_shoulder_span"] = None
     return mesh
 
 
@@ -526,14 +542,28 @@ def build_pants(part, table, scale):
     mesh.rings["hem_l"] = [left_map[index] for index in left.rings["bottom"]]
     mesh.rings["hem_r"] = [right_map[index] for index in right.rings["bottom"]]
 
-    # thigh の検証リング: ブレンドが終わり(完全な円)、かつ太もも保持区間
-    # (THIGH_HOLD_T)内にあるリング行。無ければ thigh ゲートは掛けない
+    # thigh の検証リング: ブレンドが終わって完全な円になった行。太もも保持区間
+    # (THIGH_HOLD_T)内の最後の行が第一候補。保持区間に行が無い粗い割りでは、
+    # 円になった最初の行で測り、**設計値もその行のプロファイル値にする**
+    # (行が無いからと黙ってゲートを消すと「針の脚」の網に穴が開く。PR #8 レビュー)
     thigh_row = None
     for index in range(1, leg_rings_count + 1):
         t = index / leg_rings_count
         if t >= blend and t <= modulate.THIGH_HOLD_T:
             thigh_row = index
+    if thigh_row is None:
+        for index in range(1, leg_rings_count + 1):
+            if index / leg_rings_count >= blend:
+                thigh_row = index
+                break
+    thigh_target = None
     if thigh_row is not None:
+        thigh_target = 2.0 * math.pi * modulate.leg_radius_profile(
+            thigh_row / leg_rings_count,
+            thigh / (2.0 * math.pi),
+            knee / (2.0 * math.pi),
+            hem / (2.0 * math.pi),
+        )
         for label, mapping in (("l", left_map), ("r", right_map)):
             mesh.rings["thigh_" + label] = [
                 mapping[position]
@@ -560,8 +590,8 @@ def build_pants(part, table, scale):
         "pants_inseam": inseam,
         "pants_hem": hem,
     }
-    if thigh_row is not None:
-        mesh.design["pants_thigh"] = thigh
+    if thigh_target is not None:
+        mesh.design["pants_thigh"] = thigh_target
     return mesh
 
 

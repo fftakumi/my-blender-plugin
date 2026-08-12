@@ -106,6 +106,32 @@ def test_cape_has_shoulders():
     assert entry["hard"]["cape_sits_on_the_shoulders"]["ok"]
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"rings": 20},
+        {"rings": 64},
+        {"flare": 3.0},
+        {"length": 0.1},
+        {"rings": 20, "flare": 3.0, "length": 0.1},
+    ],
+)
+def test_legal_parameter_ranges_do_not_false_positive_the_shoulder_gate(overrides):
+    """スキーマの合法範囲内で肩ゲートが誤検知しないこと(PR #8 レビューの再現ケース)。
+    誤検知すると _prebuild_check が正しい AI 出力を捨ててしまう"""
+    normalized, built = build_cape({"Cape_Body": overrides})
+    entry = gates(built, normalized, "Cape_Body")
+    assert entry["failed"] == [], (overrides, entry["failed"])
+
+
+def test_a_coarse_ring_grid_warns_instead_of_false_failing():
+    """肩線の近くにリング行が無い粗い割りでは、ゲートを黙って消さず warn で知らせる"""
+    normalized, built = build_cape({"Cape_Body": {"rings": 2}})
+    entry = gates(built, normalized, "Cape_Body")
+    assert "cape_sits_on_the_shoulders" not in entry["hard"]
+    assert "cape_shoulder_row_missing" in entry["warned"]
+
+
 def test_narrowing_the_shoulders_in_the_mesh_breaks_the_shoulder_gate():
     """design はそのまま、肩まわりのリング行だけ細める → 実測ゲートが捕まえる"""
     normalized, built = build_cape()
