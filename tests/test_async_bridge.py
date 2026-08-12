@@ -91,8 +91,8 @@ def test_start_twice_raises():
         job.start()
 
 
-def test_operator_delegates_ai_path_to_the_modal_operator():
-    """生成オペレーターは AI 使用時にモーダル版へ引き継ぐ(同期で待たない)"""
+def test_modal_operator_is_registered_and_internal():
+    """AI 待ちモーダル版が登録されていて、F3 検索には出ないこと"""
     from my_blender_plugin import operators
 
     assert operators.MYPLUGIN_OT_generate_costume_ai in operators._classes
