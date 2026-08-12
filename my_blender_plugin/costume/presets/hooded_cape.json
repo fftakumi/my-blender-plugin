@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "name": "hooded_cape",
+  "assumed_height": 1.58,
+  "ease": 0.03,
+  "meters_per_unit": 1.0,
+  "poly_budget": 3000,
+  "materials": {
+    "main": {
+      "base_color": [0.1, 0.11, 0.16],
+      "roughness": 0.78,
+      "sheen": 0.28
+    }
+  },
+  "parts": [
+    {
+      "type": "cape",
+      "name": "Cape_Body",
+      "material": "main",
+      "params": {
+        "neck_z": 0.82,
+        "length": 0.32,
+        "segments": 28,
+        "rings": 12,
+        "neck_ease": 0.35,
+        "flare": 1.5,
+        "flare_curve": 1.0,
+        "front_open_degrees": 40.0
+      }
+    },
+    {
+      "type": "hood",
+      "name": "Cape_Hood",
+      "material": "main",
+      "attach_to": "Cape_Body",
+      "params": {
+        "rings": 12,
+        "head_ease": 0.15,
+        "height_scale": 1.25,
+        "back_shift": 0.35,
+        "face_open_degrees": 120.0,
+        "blend": 0.35,
+        "taper_start": 0.65,
+        "tip_ratio": 0.1
+      }
+    }
+  ],
+  "joints": [
+    {
+      "a": "Cape_Body",
+      "a_ring": "top",
+      "b": "Cape_Hood",
+      "b_ring": "bottom",
+      "kind": "shared"
+    }
+  ]
+}

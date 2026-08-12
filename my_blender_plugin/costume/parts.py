@@ -181,6 +181,420 @@ def build_waistband(part, table, scale):
     return mesh
 
 
+#: ケープの首→肩線の落差 /H。**設計値**(bodice の肩傾斜と釣り合う値)。
+#: 検証の肩ゲートが見る位置なので spec には持たせない(SLEEVE_ELBOW_T と同じ理屈)
+CAPE_SHOULDER_DROP = 0.045
+#: 肩を覆う布の半幅 / 肩幅。**設計値**(肩の上に布が少しかぶる)
+CAPE_SHOULDER_COVER = 0.55
+
+
+def build_cape(part, table, scale):
+    """ケープ。首まわり→**肩の張り**→裾へ広がる、前の開いたシート。
+
+    定義は docs/garments.md。bodice の builder は使わない — bodice は design に
+    shoulder_width 等を入れるのでブラウス固有のゲート(シャツテール・胸のふくらみ・
+    製品着丈)が発火する。ケープはケープの design キーだけを申告する。
+
+    **ただの円錐はスカートと区別が付かない**(ブラインド識別のテストで実証)。
+    首から肩線までの短い区間で幅を肩幅まで一気に広げ、そこから flare で裾へ
+    広げる「ハンガー型」のプロファイルにする。肩の折れがケープをケープに見せる。
+
+    リングは水平のまま(前下がりは入れない)。上端の弧長は「首回り×(1+ゆとり)の
+    周長から前開きの楔ぶんを除いた長さ」= 製図の値として design に入れ、実測と
+    突き合わせる。断面は体と同じ厚み比の楕円で一定(肩に掛かる布なので)。
+    """
+    params = part["params"]
+    height = table["height"]
+    length = params["length"] * height
+    neck_z = params["neck_z"] * height
+    flare = params["flare"]
+    gap_angle = math.radians(params["front_open_degrees"])
+
+    neck_perimeter = table["neck"] * (1.0 + params["neck_ease"])
+    angles = _front_open_angles(params["segments"], gap_angle)
+    depth_ratio = table["depth_ratio"]
+    # 上端の弧長の製図値。楕円は弧長が角度に比例しない(前面の弧が濃い)ので
+    # 「周長×角度割合」ではなく楕円弧を数値的に積む。前開きの楔は前中心の周り
+    top_semi = modulate.ellipse_semi_major(neck_perimeter, depth_ratio)
+    top_arc = modulate.ellipse_arc(
+        top_semi,
+        depth_ratio,
+        FRONT_ANGLE + gap_angle * 0.5,
+        FRONT_ANGLE + 2.0 * math.pi - gap_angle * 0.5,
+    )
+
+    # 肩線: 首の下 CAPE_SHOULDER_DROP、半幅は肩幅 × CAPE_SHOULDER_COVER(製図値)
+    shoulder_semi = table["shoulder_width"] * CAPE_SHOULDER_COVER
+    shoulder_perimeter = modulate.ellipse_perimeter(shoulder_semi, depth_ratio)
+    t_shoulder = min(0.5, CAPE_SHOULDER_DROP * height / length)
+
+    def perimeter_at(t):
+        if t <= t_shoulder:
+            local = modulate.smoothstep(t / t_shoulder)
+            return neck_perimeter + (shoulder_perimeter - neck_perimeter) * local
+        local = (t - t_shoulder) / (1.0 - t_shoulder)
+        return shoulder_perimeter * modulate.flare_multiplier(
+            local, flare, params["flare_curve"]
+        )
+
+    ring_points = []
+    hem_semi = None
+    for t in modulate.axis_fractions(params["rings"]):
+        semi = modulate.ellipse_semi_major(perimeter_at(t), depth_ratio)
+        hem_semi = semi
+        ring_points.append(
+            kernels.ring_from_polar(
+                [semi * scale] * params["segments"],
+                angles,
+                (neck_z - t * length) * scale,
+                depth_ratio=depth_ratio,
+            )
+        )
+
+    mesh = kernels.loft_rings(ring_points, name=part["name"], closed=False, tubular=True)
+    mesh.material = part["material"]
+    mesh.design = {
+        # 開いた弧なので閉ループ用の周長検算は使わない(cape_* の弧長で見る)
+        "top_perimeter": None,
+        "bottom_perimeter": None,
+        "bottom_fit_perimeter": None,
+        "bottom_perimeter_note": "前が開いた弧なので cape_top_arc / cape_flare で検算する",
+        "top_z": neck_z * scale,
+        "bottom_z": (neck_z - length) * scale,
+        "length": length * scale,
+        "depth_ratio_top": depth_ratio,
+        "depth_ratio_bottom": depth_ratio,
+        "radial_modulations": [],
+        "pleats": 0,
+        "pleat_depth": 0.0,
+        # 前が開いたシート = 外周が1本の輪
+        "boundary_loops": 1,
+        "boundary_verts": None,
+        # ---- ケープ固有(validate 側のゲートが発火する)----
+        "cape_top_arc": top_arc * scale,
+        # 裾弧長 / 上端弧長 の期待値。弧の角度割合は全リング同じなので周長比と一致
+        "cape_flare": perimeter_at(1.0) / neck_perimeter,
+        # 裾の開き幅(前開き端点間の距離)。端点は前中心 ±gap/2 にあるので
+        # x 成分が支配的で、弦長 ≈ 2·半径·sin(gap/2)
+        "cape_hem_gap": 2.0 * hem_semi * math.sin(gap_angle * 0.5) * scale,
+    }
+    # 肩の張りの設計値は**肩線に最も近いリング行へスナップ**して出す。
+    # 理論位置(t_shoulder)のままだと、格子1個ぶんのずれに flare の成長が乗って
+    # 合法な spec で誤検知した(PR #8 レビュー: rings=20 / flare=3.0 / length=0.1)。
+    # 検証側は同じ行を測るので格子誤差が消える(パンツの thigh_target と同じ手口)
+    rings_count = params["rings"]
+    row = min(
+        range(rings_count),
+        key=lambda index: abs(index / (rings_count - 1) - t_shoulder),
+    )
+    t_row = row / (rings_count - 1)
+    if abs(t_row - t_shoulder) <= 0.35 * t_shoulder:
+        mesh.design["cape_shoulder_t"] = t_row
+        mesh.design["cape_shoulder_span"] = (
+            2.0 * modulate.ellipse_semi_major(perimeter_at(t_row), depth_ratio) * scale
+        )
+    else:
+        # リング割りが粗くて肩線の近くに行が無い。黙って消さず warn 側で知らせる
+        mesh.design["cape_shoulder_t"] = t_shoulder
+        mesh.design["cape_shoulder_span"] = None
+    return mesh
+
+
+def build_hood(part, table, scale, host=None):
+    """フード。host(cape / bodice)の首の縫い目 = top リングから頭を包む。
+
+    定義は docs/garments.md。リング0を host の頂点そのものにするので継ぎ目はゼロ
+    (collar と同じ手口)。上へ行くほど:
+    - 半径: 首 → 頭囲(ゆとり込み)へ膨らみ、taper_start から先端へ絞る
+      (頂点数を変えられないので、キャップは張らず先端の小さな弧で終える)
+    - 前の開口: host の前開き角から face_open_degrees へ、角度の再配置で広げる
+    - 中心: 後ろへ逃がす(頭は首の真上ではなく少し後ろにある)
+    """
+    if host is None:
+        raise PartError("hood は attach_to で首の縫い目を持つパーツを指定してください")
+    indices = host.rings.get("top")
+    if not indices:
+        raise PartError("%s に首の縫い目(top)がありません" % (host.name,))
+    params = part["params"]
+
+    seam = [host.verts[index] for index in indices]
+    count = len(seam)
+    if count < 4:
+        raise PartError("首の縫い目の頂点が少なすぎます: %d" % (count,))
+    cx = sum(point[0] for point in seam) / count
+    cy = sum(point[1] for point in seam) / count
+
+    # 縫い目を前中心まわりの極座標に分解。host は前開きの弧なので、
+    # 前中心からの相対角に直せば [gap/2, 2π-gap/2] の単調列になる
+    seam_rel = []
+    for x, y, z in seam:
+        relative = (math.atan2(y - cy, x - cx) - FRONT_ANGLE) % (2.0 * math.pi)
+        seam_rel.append((relative, math.hypot(x - cx, y - cy), z))
+    host_gap = seam_rel[0][0] + (2.0 * math.pi - seam_rel[-1][0])
+    neck_radius = sum(radius for _rel, radius, _z in seam_rel) / count
+    seam_z_top = max(point[2] for point in seam)
+
+    head_radius = (
+        table["head_circumference"] * (1.0 + params["head_ease"]) / (2.0 * math.pi) * scale
+    )
+    hood_height = table["head_height"] * params["height_scale"] * scale
+    face_gap = math.radians(params["face_open_degrees"])
+    taper_start = params["taper_start"]
+
+    rings = params["rings"]
+    ring_points = []
+    for index in range(rings):
+        t = index / (rings - 1)
+        if index == 0:
+            ring_points.append(list(seam))
+            continue
+        grow = modulate.smoothstep(min(1.0, t / params["blend"]))
+        gap_t = host_gap + (face_gap - host_gap) * modulate.smoothstep(t)
+        step = (2.0 * math.pi - gap_t) / (count - 1)
+        radius_t = neck_radius + (head_radius - neck_radius) * grow
+        if t > taper_start:
+            shrink = modulate.smoothstep((t - taper_start) / (1.0 - taper_start))
+            radius_t *= 1.0 - (1.0 - params["tip_ratio"]) * shrink
+        center_y = cy - params["back_shift"] * head_radius * t
+        points = []
+        for j, (rel, seam_radius, seam_z) in enumerate(seam_rel):
+            target_rel = gap_t * 0.5 + step * j
+            rel_j = rel + (target_rel - rel) * grow
+            radius_j = seam_radius + (radius_t - seam_radius) * grow
+            angle = FRONT_ANGLE + rel_j
+            z = seam_z + (seam_z_top - seam_z) * grow + hood_height * t
+            points.append(
+                (cx + radius_j * math.cos(angle), center_y + radius_j * math.sin(angle), z)
+            )
+        ring_points.append(points)
+
+    # リングは下(縫い目)から上(先端)へ積んだので、巻き方向の規約
+    # (上から下へ)に合わせて逆順で渡す
+    mesh = kernels.loft_rings(
+        list(reversed(ring_points)), name=part["name"], closed=False, tubular=False
+    )
+    mesh.material = part["material"]
+    mesh.design = {
+        "top_perimeter": None,
+        "bottom_perimeter": None,
+        "bottom_fit_perimeter": None,
+        "bottom_perimeter_note": "首の縫い目の実物に乗るので周長は host 側で検算する",
+        "top_z": max(point[2] for point in ring_points[-1]),
+        "bottom_z": min(point[2] for point in seam),
+        "length": None,  # 高さは hood_depth で見る(縫い目の前下がりが z 全幅に混ざるため)
+        "depth_ratio_top": None,
+        "depth_ratio_bottom": None,
+        "radial_modulations": None,  # 中心が後ろへ逃げるので周期成分の検査は掛けられない
+        "pleats": 0,
+        "pleat_depth": 0.0,
+        "boundary_loops": 1,
+        "boundary_verts": None,
+        # ---- フード固有(validate 側のゲートが発火する)----
+        # 頭を包むこと: 一番太いリングの弧長の下限(頭囲×ゆとりの3/4。設計値)
+        "hood_arc_floor": table["head_circumference"]
+        * (1.0 + params["head_ease"])
+        * 0.75
+        * scale,
+        # 縫い目の上端からフードの頂までの高さ(設計値)
+        "hood_depth": hood_height,
+        # 顔の開口の幅の下限: 設計の開口弦長の半分(開いていることの確認)
+        "hood_face_gap_floor": head_radius * math.sin(face_gap * 0.5),
+    }
+    return mesh
+
+
+def build_pants(part, table, scale):
+    """パンツ。腰からは1本の筒、股からは2本の脚(定義は docs/garments.md)。
+
+    分岐は K1(リング列のロフト)では表現できない唯一の形。胴(腰→股)・左脚・
+    右脚を別々に K1 でロフトし、K2(kernels.weld_meshes)で溶接する。
+    股リングの半周と股の縫い目(ブリッジ)の頂点は**同じタプルのまま**両脚に渡す
+    (再計算すると誤差で溶接できず、duplicate_verts / nonmanifold で落ちる)。
+    """
+    params = part["params"]
+    height = table["height"]
+    segments = params["segments"]
+    if segments % 4 != 0:  # pragma: no cover - spec 側で弾かれている
+        raise PartError("pants の segments は4の倍数にしてください: %d" % (segments,))
+
+    waist_z_m = params["waist_z"] * height
+    rise_m = table["rise"] * params["rise_scale"]
+    inseam = table["inseam"] * params["inseam_scale"] * scale
+    thigh = table["thigh"] * (1.0 + params["thigh_ease"]) * scale
+    knee = table["knee"] * params["knee_scale"] * scale
+    hem = table["hem_opening"] * params["hem_scale"] * scale
+
+    # 胴(腰→股): スカートと同じ「ウエスト→ヒップに沿う」プロファイル。広がりは無し
+    profile = modulate.skirt_profile(
+        rings=params["hip_rings"],
+        length=rise_m,
+        waist_perimeter=table["waist"],
+        hip_perimeter=table["hip"],
+        hip_drop=table["hip_drop"],
+        hip_hug=1.0,
+        flare=1.0,
+        flare_curve=1.0,
+        depth_ratio=table["depth_ratio"],
+    )
+    angles = modulate.circle_angles(segments)
+    torso_rings = [
+        kernels.ring_from_polar(
+            [semi * scale] * segments,
+            angles,
+            (waist_z_m - t * rise_m) * scale,
+            depth_ratio=depth,
+        )
+        for semi, depth, t in zip(profile["semi_major"], profile["depth_ratio"], profile["t"])
+    ]
+    torso = kernels.loft_rings(torso_rings, name=part["name"], closed=True, tubular=True)
+
+    # 股リングを前後中心で割る。segments%4==0 なので前中心・後ろ中心に頂点が必ずある
+    crotch = torso_rings[-1]
+    crotch_z = (waist_z_m - rise_m) * scale
+    front = _side_segment(angles, FRONT_ANGLE)
+    back = _side_segment(angles, math.pi / 2.0)
+
+    # 股の縫い目(ブリッジ): 前中心 → 後ろ中心を x=0 の直線で渡る
+    crotch_segments = params["crotch_segments"]
+    bridge = [
+        tuple(
+            crotch[front][axis]
+            + (crotch[back][axis] - crotch[front][axis]) * step / crotch_segments
+            for axis in range(3)
+        )
+        for step in range(1, crotch_segments)
+    ]
+
+    def torso_arc(start, stop):
+        indices = [start]
+        while indices[-1] != stop:
+            indices.append((indices[-1] + 1) % segments)
+        return [crotch[index] for index in indices]
+
+    # 分岐リング(どちらも +z から見て反時計回り = ロフトで法線が外向き)。
+    # 左脚(x>0): 前中心→(+x側)→後ろ中心 + ブリッジを後ろ→前へ。
+    # 右脚(x<0): 後ろ中心→(-x側)→前中心 + ブリッジを前→後ろへ。
+    # ブリッジの辺を両脚が逆向きに辿るので、溶接後の巻き方向が揃う
+    left_ring = torso_arc(front, back) + list(reversed(bridge))
+    right_ring = torso_arc(back, front) + list(bridge)
+
+    leg_rings_count = params["leg_rings"]
+    blend = params["blend"]
+
+    def leg_loft(ring0):
+        count = len(ring0)
+        cx = sum(point[0] for point in ring0) / count
+        cy = sum(point[1] for point in ring0) / count
+        side_sign = 1.0 if cx >= 0.0 else -1.0
+        # 極分解は「各頂点を円周上のどこへ送るか」の順序決めに使う。
+        # リングは CCW なので unwrap すれば角度は増える一方
+        unwrapped = []
+        previous = None
+        for x, y, _z in ring0:
+            angle = math.atan2(y - cy, x - cx)
+            if previous is not None:
+                while angle < previous - math.pi:
+                    angle += 2.0 * math.pi
+                while angle > previous + math.pi:
+                    angle -= 2.0 * math.pi
+            unwrapped.append(angle)
+            previous = angle
+        start_angle = unwrapped[0]
+        thigh_r = thigh / (2.0 * math.pi)
+        knee_r = knee / (2.0 * math.pi)
+        hem_r = hem / (2.0 * math.pi)
+        # 脚の内側の壁が x=0 を跨ぐと反対の脚と貫通する(自己交差ゲートで落ちた)。
+        # 円の中心を「半径 + 隙間」だけ体側へ逃がして、内壁を前後中心面の手前に保つ
+        inner_gap = 0.05 * thigh_r
+        rings_points = [list(ring0)]
+        for index in range(1, leg_rings_count + 1):
+            t = index / leg_rings_count
+            grow = modulate.smoothstep(min(1.0, t / blend))
+            target_radius = modulate.leg_radius_profile(t, thigh_r, knee_r, hem_r)
+            centre_x = side_sign * max(abs(cx), target_radius + inner_gap)
+            z = crotch_z - inseam * t
+            points = []
+            for j, (x0, y0, _z0) in enumerate(ring0):
+                even = start_angle + 2.0 * math.pi * j / count
+                tx = centre_x + target_radius * math.cos(even)
+                ty = cy + target_radius * math.sin(even)
+                points.append(
+                    (x0 + (tx - x0) * grow, y0 + (ty - y0) * grow, z)
+                )
+            rings_points.append(points)
+        return kernels.loft_rings(
+            rings_points, name=part["name"], closed=True, tubular=False
+        )
+
+    left = leg_loft(left_ring)
+    right = leg_loft(right_ring)
+    mesh, maps = kernels.weld_meshes([torso, left, right], name=part["name"])
+    mesh.material = part["material"]
+    torso_map, left_map, right_map = maps
+
+    # 溶接後は添字計算が使えないので、検証に使うリングをここで登録する
+    mesh.rings["top"] = [torso_map[index] for index in torso.rings["top"]]
+    half = segments // 2 + 1  # 分岐リングの外周部分の頂点数
+    leg_size = len(left_ring)
+    mesh.rings["crotch"] = [torso_map[index] for index in torso.rings["bottom"]] + [
+        left_map[position] for position in range(half, leg_size)
+    ]
+    mesh.rings["hem_l"] = [left_map[index] for index in left.rings["bottom"]]
+    mesh.rings["hem_r"] = [right_map[index] for index in right.rings["bottom"]]
+
+    # thigh の検証リング: ブレンドが終わって完全な円になった行。太もも保持区間
+    # (THIGH_HOLD_T)内の最後の行が第一候補。保持区間に行が無い粗い割りでは、
+    # 円になった最初の行で測り、**設計値もその行のプロファイル値にする**
+    # (行が無いからと黙ってゲートを消すと「針の脚」の網に穴が開く。PR #8 レビュー)
+    thigh_row = None
+    for index in range(1, leg_rings_count + 1):
+        t = index / leg_rings_count
+        if t >= blend and t <= modulate.THIGH_HOLD_T:
+            thigh_row = index
+    if thigh_row is None:
+        for index in range(1, leg_rings_count + 1):
+            if index / leg_rings_count >= blend:
+                thigh_row = index
+                break
+    thigh_target = None
+    if thigh_row is not None:
+        thigh_target = 2.0 * math.pi * modulate.leg_radius_profile(
+            thigh_row / leg_rings_count,
+            thigh / (2.0 * math.pi),
+            knee / (2.0 * math.pi),
+            hem / (2.0 * math.pi),
+        )
+        for label, mapping in (("l", left_map), ("r", right_map)):
+            mesh.rings["thigh_" + label] = [
+                mapping[position]
+                for position in range(thigh_row * leg_size, (thigh_row + 1) * leg_size)
+            ]
+
+    mesh.design = {
+        "top_perimeter": table["waist"] * scale,
+        "bottom_perimeter": None,
+        "bottom_fit_perimeter": None,
+        "bottom_perimeter_note": "裾は2本あるので pants_hem_l / pants_hem_r で見る",
+        "top_z": waist_z_m * scale,
+        "bottom_z": crotch_z - inseam,
+        "length": None,  # 腰〜裾は rise+inseam に分けて検証する
+        "depth_ratio_top": profile["depth_ratio"][0],
+        "depth_ratio_bottom": None,
+        "radial_modulations": None,  # 溶接後の形なので周期成分の検査は掛けられない
+        "pleats": 0,
+        "pleat_depth": 0.0,
+        "boundary_loops": 3,  # 腰 1 + 裾 2
+        "boundary_verts": None,
+        # ---- パンツ固有(validate 側のゲートが発火する)----
+        "pants_rise": rise_m * scale,
+        "pants_inseam": inseam,
+        "pants_hem": hem,
+    }
+    if thigh_target is not None:
+        mesh.design["pants_thigh"] = thigh_target
+    return mesh
+
+
 # ------------------------------------------------------------------ ブラウス
 #
 # 定義は docs/garments.md。要点だけ:
@@ -274,8 +688,11 @@ def build_bodice(part, table, scale):
     ]
 
     # 裾のシャツテール(定義 #16): 脇が高く前後が下がる。水平に切った裾は
-    # 「筒を切った」ようにしか見えない
-    tail_back = params["shirttail_drop"] * height
+    # 「筒を切った」ようにしか見えない。**ただしワンピースの胴のように裾に
+    # スカートを縫い付ける場合は水平が正しい**(hem_style="flat")。
+    # flat では design からシャツテールのキーを落とし、裾ゲートを発火させない
+    flat_hem = params["hem_style"] == "flat"
+    tail_back = 0.0 if flat_hem else params["shirttail_drop"] * height
     tail_front_ratio = params["shirttail_front_ratio"]
     tails = [
         modulate.shirttail_drop(angle, tail_back, tail_front_ratio, FRONT_ANGLE)
@@ -451,9 +868,6 @@ def build_bodice(part, table, scale):
         "back_neck_drop": table["back_neck_drop"] * scale,
         "built_front_neck_drop": front_drop * scale,
         "shoulder_slope_degrees": table["shoulder_slope_degrees"],
-        # --- 定義 #16(裾のシャツテール) ---
-        "shirttail_drop": tail_back * scale,
-        "shirttail_front_ratio": tail_front_ratio,
         # 前立てとボタンが乗る前中心の面。(z, 前面の y) を上から下へ
         "front_profile": front_profile,
         # --- 定義 #18(胸のふくらみ) ---
@@ -469,6 +883,11 @@ def build_bodice(part, table, scale):
         )
         * scale,
     }
+    if not flat_hem:
+        # --- 定義 #16(裾のシャツテール) --- キーの有無がゲートのスイッチ。
+        # shirttail の胴だけが「裾が曲がっていること」を検査される
+        mesh.design["shirttail_drop"] = tail_back * scale
+        mesh.design["shirttail_front_ratio"] = tail_front_ratio
     mesh.design["armholes"] = _armhole_frames(ring_points, centres, segments, skip)
     from . import validate as validate_module
 
@@ -869,6 +1288,12 @@ def build_placket(part, table, scale, host=None):
         "placket_top_z": top_z,
         "placket_bottom_z": bottom_z,
         "placket_front_y": min(point[1] for ring in ring_points for point in ring),
+        # 前立て中央(いちばん前)の表面の (z, y)。ボタンはこの面に沿って置く。
+        # 単一の placket_front_y(全体の最前点)だけだと、前面が z で動く胴
+        # (ワンピースの胸→ウエスト)でボタンが布から浮く
+        "placket_front_profile": [
+            (z, front_y(z) - standoff - bulge) for z in heights
+        ],
         # 覆う相手。これより狭いと前開きが黒い筋として見える
         "front_gap_width": (host.design or {}).get("front_gap_width"),
     }
@@ -896,8 +1321,23 @@ def build_buttons(part, table, scale, host=None):
         params["top_inset"],
         params["bottom_inset"],
     )
-    # 前立ての表面よりわずかに前。触れさせると面が交差して不合格になる
-    base_y = design["placket_front_y"] - params["standoff"] * table["height"] * scale
+    # 前立ての表面よりわずかに前。触れさせると面が交差して不合格になる。
+    # 表面は z で動く(胸の張り出し・ウエストの絞り)ので、ボタンごとに
+    # **その高さの表面**から浮かせる。全体の最前点からの一定 y に置くと、
+    # 前面が後退する区間でボタンが宙に浮く(ワンピースで実証)
+    standoff = params["standoff"] * table["height"] * scale
+    surface = design.get("placket_front_profile")
+
+    def base_y_at(z):
+        if not surface:
+            return design["placket_front_y"] - standoff
+        # ボタンは平らな円盤のまま置くので、**ディスクの z 幅全体**で表面より
+        # 前に出す(中心の高さだけ見ると、表面が傾く区間で縁が布に食い込む)
+        span = [z - radius, z, z + radius] + [
+            knot for knot, _value in surface if z - radius <= knot <= z + radius
+        ]
+        return min(modulate.interp_profile(surface, s) for s in span) - standoff
+
     segments = max(6, params["segments"])
     angles = modulate.circle_angles(segments)
 
@@ -931,6 +1371,7 @@ def build_buttons(part, table, scale, host=None):
 
     verts, quads, uv_loops = [], [], []
     for z in zs:
+        base_y = base_y_at(z)
         shell = [
             [
                 (
@@ -987,6 +1428,10 @@ def build_buttons(part, table, scale, host=None):
         "placket_width": design["placket_width"],
         "placket_top_z": design["placket_top_z"],
         "placket_bottom_z": design["placket_bottom_z"],
+        # ボタンが前立ての**表面に沿っている**ことの検証用(定義 #19)。
+        # 表面プロファイルは前立ての実物から、離隔は自分の standoff
+        "placket_front_profile": design.get("placket_front_profile"),
+        "button_standoff": standoff,
         # --- 定義 #15(ボタンそのものの形) ---
         "button_diameter": radius * 2.0,
         "button_thickness": thickness,
@@ -1000,24 +1445,36 @@ def build_buttons(part, table, scale, host=None):
 BUILDERS = {
     "skirt_body": build_skirt_body,
     "waistband": build_waistband,
+    "cape": build_cape,
+    "pants": build_pants,
     "bodice": build_bodice,
     "sleeve": build_sleeve,
     "collar": build_collar,
     "collar_fall": build_collar_fall,
     "placket": build_placket,
     "buttons": build_buttons,
+    "hood": build_hood,
 }
 
 #: 他のパーツの**実物**から作るパーツ。build_all が依存順を保証する。
 #: 継ぎ目や位置を計算し直さずに相手の頂点をそのまま使うので、ずれが原理的に起きない
 DEPENDENT_TYPES = frozenset(
-    ("sleeve", "collar", "collar_fall", "placket", "buttons")
+    ("sleeve", "collar", "collar_fall", "placket", "buttons", "hood")
 )
 
 # spec が知っているパーツ種別と、ここで作れる種別がずれていないことを import 時に確かめる
 _MISSING = sorted(set(spec_module.PART_SCHEMAS) - set(BUILDERS))
 if _MISSING:  # pragma: no cover - 実装漏れの検出用
     raise ImportError("parts.BUILDERS に実装が無いパーツ種別があります: %s" % ", ".join(_MISSING))
+
+# 依存パーツの集合は spec 側(attach_to を必須にする)とここ(host を渡す)の
+# 二重管理なので、ずれると「spec は attach_to を要求するのに build_all は host を
+# 渡さない」不整合が静かに起きる。BUILDERS の検査と同じく import 時に突き合わせる
+if spec_module.DEPENDENT_PART_TYPES != DEPENDENT_TYPES:  # pragma: no cover - 実装漏れの検出用
+    raise ImportError(
+        "spec.DEPENDENT_PART_TYPES と parts.DEPENDENT_TYPES がずれています: %s / %s"
+        % (sorted(spec_module.DEPENDENT_PART_TYPES), sorted(DEPENDENT_TYPES))
+    )
 
 
 def build_all(normalized_spec):

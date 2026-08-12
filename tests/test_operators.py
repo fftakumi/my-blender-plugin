@@ -2,6 +2,7 @@ import pytest
 
 from my_blender_plugin.operators import (
     MYPLUGIN_OT_fit_body_to_corset,
+    MYPLUGIN_OT_generate_costume,
     bounding_dimensions,
     coverage_weight,
     fit_name_token,
@@ -11,6 +12,12 @@ from my_blender_plugin.operators import (
     resolve_body_and_corset,
     resolve_fit_ranges,
 )
+
+
+def test_generate_costume_uses_the_ai_by_default():
+    """解釈の主役は AI(計画どおり既定 ON)。フェイク bpy ではアノテーション値が
+    default そのものになる(conftest の _fake_property)"""
+    assert MYPLUGIN_OT_generate_costume.__annotations__["use_ai"] is True
 
 
 def test_grid_positions_count():

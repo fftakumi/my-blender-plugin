@@ -46,6 +46,50 @@ def ellipse_semi_major(perimeter, depth_ratio):
     return perimeter / ellipse_perimeter(1.0, depth_ratio)
 
 
+def interp_profile(profile, z):
+    """(z, 値) を上から下へ並べた折れ線を z で線形補間する(範囲外は端の値)。
+
+    胴の前面プロファイルや前立ての表面プロファイルの参照に使う。
+    生成側と検証側が**同じ補間**で表面を読むための共有実装。
+    """
+    if not profile:
+        raise ValueError("profile が空です")
+    if z >= profile[0][0]:
+        return profile[0][1]
+    for index in range(1, len(profile)):
+        upper_z, upper_value = profile[index - 1]
+        lower_z, lower_value = profile[index]
+        if lower_z <= z <= upper_z:
+            if upper_z == lower_z:
+                return lower_value
+            local = (upper_z - z) / (upper_z - lower_z)
+            return upper_value + (lower_value - upper_value) * local
+    return profile[-1][1]
+
+
+def ellipse_arc(semi_major, depth_ratio, start_angle, end_angle, steps=512):
+    """楕円弧の長さ(kernels.ring_from_polar と同じパラメータ化: x=r·cosθ, y=r·sinθ·b)。
+
+    楕円は弧長が角度に比例しない(前後に潰れた断面では前面の弧が濃い)ので、
+    「周長 × 角度の割合」の近似は前開きの楔が大きくなるほどずれる
+    (実測: 開き40°・厚み比0.68 で 2.3%)。細分した折れ線で数値的に積む。
+    """
+    if end_angle < start_angle:
+        raise ValueError("end_angle は start_angle 以上にしてください")
+    length = 0.0
+    previous = None
+    for index in range(steps + 1):
+        angle = start_angle + (end_angle - start_angle) * index / steps
+        point = (
+            semi_major * math.cos(angle),
+            semi_major * math.sin(angle) * depth_ratio,
+        )
+        if previous is not None:
+            length += math.hypot(point[0] - previous[0], point[1] - previous[1])
+        previous = point
+    return length
+
+
 def depth_ratio_profile(ts, waist_depth_ratio, flare, flare_curve):
     """リングごとの厚み比(前後 / 左右)。
 
@@ -293,6 +337,27 @@ def circle_angles(segments):
 #: 検証はここで袖幅が保たれているかを見るので、生成側の elbow_fraction を
 #: 動かしてもゲートは逃げない(逃げると「全長を細めた円錐」が通ってしまう)
 SLEEVE_ELBOW_T = 0.5
+
+#: パンツの脚の形状定数。SLEEVE_ELBOW_T と同じ理屈で spec には持たせない
+THIGH_HOLD_T = 0.3  # 股〜ここまでは太もも周を保つ(脚の付け根は円筒に近い)
+KNEE_T = 0.5  # 膝の位置(股〜裾の比)
+
+
+def leg_radius_profile(t, thigh_radius, knee_radius, hem_radius):
+    """パンツの脚の半径。太もも(保持)→膝→裾へ smoothstep で細くなる。
+
+    検証の thigh ゲートは THIGH_HOLD_T までのリングを見るので、
+    保持区間を無くした「全長を細めた円錐の脚」は通らない。
+    """
+    if not 0.0 <= t <= 1.0:
+        raise ValueError("t は 0〜1 にしてください: %r" % (t,))
+    if t <= THIGH_HOLD_T:
+        return thigh_radius
+    if t <= KNEE_T:
+        local = smoothstep((t - THIGH_HOLD_T) / (KNEE_T - THIGH_HOLD_T))
+        return thigh_radius + (knee_radius - thigh_radius) * local
+    local = smoothstep((t - KNEE_T) / (1.0 - KNEE_T))
+    return knee_radius + (hem_radius - knee_radius) * local
 
 
 def sleeve_radius_profile(t, bicep_radius, cuff_radius, elbow, cuff_start, gather=1.0):

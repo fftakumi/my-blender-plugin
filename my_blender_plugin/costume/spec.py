@@ -9,6 +9,8 @@ import hashlib
 import json
 import os
 
+from . import modulate as _modulate
+
 SCHEMA_VERSION = 1
 
 #: 配布物に同梱する spec プリセットの置き場(zip に入る位置に置く)
@@ -54,6 +56,21 @@ _WAISTBAND = {
     "flare": (float, 1.0, 0.5, 2.0),  # 上端に対する下端のフィット周長比
 }
 
+#: ケープ。首まわりから肩の上を通って裾へ広がる、前の開いたシート
+#: (定義は docs/garments.md)。数値はすべて設計値
+_CAPE = {
+    "neck_z": (float, 0.82, 0.5, 1.2),  # 首まわりの高さ /H(bodice の shoulder_z と同じ)
+    "length": (float, 0.30, 0.05, 0.9),  # 首から裾までの丈 /H
+    "segments": (int, 28, 4, 256),
+    "rings": (int, 12, 2, 64),
+    # 首回りに掛けるゆとり。肩の上に布が乗るので襟ぐり(0.12)より大きめ
+    "neck_ease": (float, 0.35, 0.0, 2.0),
+    "flare": (float, 2.0, 1.0, 6.0),  # 裾の弧長 / 上端の弧長
+    "flare_curve": (float, 1.2, 0.2, 4.0),
+    # 前開きの楔の角度(度)。ケープは羽織りものなので前立てより広い
+    "front_open_degrees": (float, 40.0, 2.0, 270.0),
+}
+
 #: ブラウスの胴。前が開いた筒に袖ぐりの穴を2つ開ける(定義は docs/garments.md)
 _BODICE = {
     "shoulder_z": (float, 0.82, 0.3, 1.0),  # 肩の高さ /H
@@ -74,6 +91,10 @@ _BODICE = {
     "neck_fade": (float, 0.09, 0.01, 0.5),  # 前下がりが消えるまでの垂直距離 /H
     # 前開きの隙間の幅 /H。0.006 = 0.95cm。前立て(3.0cm)より細くすること
     "front_gap": (float, 0.006, 0.0005, 0.06),
+    # 裾の形。shirttail = 脇が高く前後が下がるシャツの裾(ブラウス)。
+    # flat = 水平な裾(ワンピースの胴のようにスカートを縫い付ける場合)。
+    # flat のときは design からシャツテールのキーが消え、裾ゲートは発火しない
+    "hem_style": (str, "shirttail", None, None),
     # 胸のふくらみ。**設計値**(製品実寸表にも製図資料にも「前へ何cm出るか」は無い)。
     # 0.022 = 3.5cm 相当。0 にすると楕円断面だけの胴 = メンズシャツに見える
     "bust_projection": (float, 0.022, 0.0, 0.12),
@@ -145,21 +166,67 @@ _BUTTONS = {
     "holes": (int, 4, 0, 8),  # 穴の数。シャツは4つ穴が標準
 }
 
+#: フード。host(cape / bodice)の首の縫い目(top リング)から頭を包み、
+#: 先端へ絞る前の開いたシート(定義は docs/garments.md)。数値はすべて設計値
+_HOOD = {
+    "rings": (int, 12, 4, 64),
+    "head_ease": (float, 0.15, 0.0, 1.0),  # 頭囲に掛けるゆとり
+    "height_scale": (float, 1.25, 0.8, 3.0),  # フードの高さ / 全頭高(かぶりの余裕)
+    "back_shift": (float, 0.35, 0.0, 1.0),  # 中心を後ろへ逃がす量 / 頭の半径
+    "face_open_degrees": (float, 120.0, 20.0, 300.0),  # 顔の開口の角度(上端側)
+    "blend": (float, 0.35, 0.05, 1.0),  # 首の形→頭の円へ馴染ませる区間 / 高さ
+    "taper_start": (float, 0.65, 0.3, 0.95),  # 先端へ絞り始める位置 / 高さ
+    "tip_ratio": (float, 0.10, 0.02, 0.5),  # 先端の半径 / 頭の半径
+}
+
+#: パンツ。腰からは1本の筒、股からは2本の脚(定義と K2 の作りは docs/garments.md)。
+#: 寸法の絶対値はサイズ表(rise / inseam / thigh / knee / hem_opening)から取り、
+#: spec には倍率だけを書かせる
+_PANTS = {
+    "waist_z": (float, 0.62, 0.0, 1.0),  # ウエストラインの高さ /H
+    "segments": (int, 32, 8, 256),  # 周方向の分割数。**4の倍数必須**(股を前後で割る)
+    "hip_rings": (int, 6, 2, 64),  # 腰〜股のリング数
+    "leg_rings": (int, 12, 3, 128),  # 股〜裾のリング数
+    "crotch_segments": (int, 4, 1, 32),  # 股の縫い目の分割数
+    "rise_scale": (float, 1.0, 0.5, 2.0),  # 股上 / サイズ表の股上
+    "inseam_scale": (float, 1.0, 0.1, 1.5),  # 股下 / サイズ表の股下(0.5 でハーフパンツ)
+    "thigh_ease": (float, 0.10, 0.0, 1.0),  # わたりに掛けるゆとり
+    "knee_scale": (float, 1.0, 0.5, 2.0),  # 膝周 / サイズ表の膝周
+    "hem_scale": (float, 1.0, 0.3, 3.0),  # 裾周 / サイズ表の裾周(>1 でワイドパンツ)
+    # 分岐リング → 円形の脚へ馴染ませる区間 / 股下。太もも保持区間より手前で
+    # 馴染み切らないと thigh の検証リングが円にならないので、上限は保持区間の定数
+    "blend": (float, 0.25, 0.05, _modulate.THIGH_HOLD_T),
+}
+
 PART_SCHEMAS = {
     "skirt_body": _SKIRT_BODY,
     "waistband": _WAISTBAND,
+    "cape": _CAPE,
+    "pants": _PANTS,
     "bodice": _BODICE,
     "sleeve": _SLEEVE,
     "collar": _COLLAR,
     "collar_fall": _COLLAR_FALL,
     "placket": _PLACKET,
     "buttons": _BUTTONS,
+    "hood": _HOOD,
+}
+
+#: 依存パーツの取り付け先(type → 取り付け先パーツの type)。
+#: 依存パーツは相手の**実物**(境界ループや前面プロファイル)から作るので、
+#: spec に attach_to が必須になる。json_schema_hint の説明文もここから生成する
+#: (対応表を手書きで二重に持たない)
+ATTACH_TARGETS = {
+    "sleeve": "bodice",
+    "collar": "bodice",
+    "collar_fall": "collar",
+    "placket": "bodice",
+    "buttons": "placket",
+    "hood": "cape か bodice(首の縫い目 = top リングを持つ)",
 }
 
 #: 他のパーツの**実物**から作るパーツ。spec に attach_to が必須
-DEPENDENT_PART_TYPES = frozenset(
-    ("sleeve", "collar", "collar_fall", "placket", "buttons")
-)
+DEPENDENT_PART_TYPES = frozenset(ATTACH_TARGETS)
 
 #: joints で指定できる境界リングの名前
 JOINT_RING_NAMES = frozenset(("top", "bottom", "armhole_l", "armhole_r"))
@@ -171,10 +238,6 @@ JOINT_RING_NAMES = frozenset(("top", "bottom", "armhole_l", "armhole_r"))
 #:            (袖ぐりと袖山。縫製でも袖山にはいせ込みが入って長さが違う)。
 #:            交差の検査からは外す
 JOINT_KINDS = frozenset(("shared", "sewn"))
-
-# パーツごとの「筒状かどうか」。法線の外向き判定を掛けてよいのは筒状パーツだけ。
-# 袖は斜めに伸びるので、z 軸まわりの外向き判定は当てられない。
-TUBULAR_PART_TYPES = frozenset(("skirt_body", "waistband", "bodice", "collar"))
 
 _MATERIAL_SCHEMA = {
     "base_color": (list, [0.16, 0.19, 0.35], None, None),  # linear RGB
@@ -221,7 +284,7 @@ def default_spec(name="skirt_flare"):
 
 
 #: 文字列で選択肢が決まっているフィールド
-_ENUM_FIELDS = {"side": ("l", "r")}
+_ENUM_FIELDS = {"side": ("l", "r"), "hem_style": ("shirttail", "flat")}
 
 
 def _coerce(value, field, schema, where, errors):
@@ -298,11 +361,31 @@ def _modulation_errors(part, where):
     エラーにする。
     """
     params = part.get("params") or {}
+    errors = []
+
+    if part.get("type") == "hood":
+        blend = params.get("blend") or 0.0
+        taper = params.get("taper_start") or 1.0
+        if blend > taper:
+            # 円へ馴染み切る前に先端へ絞り始めると頭の太さに到達せず、
+            # hood_wraps_the_head が必ず落ちる(合法な範囲の組み合わせで
+            # 起きる誤検知だった。PR #8 レビュー)。spec の段階で止める
+            errors.append(
+                "%s: hood の blend(%.2f)は taper_start(%.2f)以下にしてください"
+                "(絞り始める前に頭の太さへ届かせる)" % (where, blend, taper)
+            )
+
     segments = params.get("segments")
     if not segments:
-        return []
+        return errors
 
-    errors = []
+    if part.get("type") == "pants" and segments % 4 != 0:
+        # 股を前後中心で割るので、前中心・後ろ中心・両脇に頂点が要る。
+        # 黙って丸めない — このエラー文がそのまま AI への修正指示になる
+        errors.append(
+            "%s: pants の segments(%d)は4の倍数にしてください"
+            "(前後中心と両脇に頂点が要ります)" % (where, segments)
+        )
     pleats = params.get("pleats") or 0
     if pleats:
         if segments % pleats != 0:
@@ -544,29 +627,66 @@ def spec_hash(spec):
 
 
 def json_schema_hint():
-    """AI に渡す用のスキーマ説明を組み立てる(プロンプトに埋める)"""
+    """AI に渡す用のスキーマ説明を組み立てる(プロンプトに埋める)。
+
+    説明はハードコードせず ATTACH_TARGETS / JOINT_RING_NAMES / JOINT_KINDS /
+    PART_SCHEMAS から生成する。定数側にパーツを足せばここも追従する
+    (プロンプトと validator がずれると、AI の正しい出力が検証で全滅する)。
+    """
+    ring_names = "|".join(sorted(JOINT_RING_NAMES))
+    kind_names = "|".join(sorted(JOINT_KINDS))
     lines = [
         "衣装 spec は以下の JSON です。数値は assumed_height に対する比率です。",
         '{"schema": %d, "name": "<英数字の名前>",' % SCHEMA_VERSION,
-        ' "assumed_height": <身長 m>, "ease": <ゆとり比>, "meters_per_unit": 1.0,',
+        ' "assumed_height": <身長 m。説明文に身長の指定が無ければキーごと省略>,',
+        ' "ease": <ゆとり比>, "meters_per_unit": 1.0, "poly_budget": <面数の上限>,',
         ' "materials": {"<キー>": {%s}},'
         % ", ".join(
             '"%s": <%s>' % (field, schema[0].__name__) for field, schema in _MATERIAL_SCHEMA.items()
         ),
         ' "parts": [{"type": "<種別>", "name": "<オブジェクト名>",'
-        ' "material": "<materialsのキー>", "params": {...}}],',
-        ' "joints": [{"a": "<パーツ名>", "a_ring": "top|bottom",'
-        ' "b": "<パーツ名>", "b_ring": "top|bottom"}]}',
+        ' "material": "<materialsのキー>", "params": {...},'
+        ' "attach_to": "<取り付け先パーツの name。依存パーツのみ>"}],',
+        ' "joints": [{"a": "<パーツ名>", "a_ring": "%s",' % ring_names,
+        '            "b": "<パーツ名>", "b_ring": "%s", "kind": "%s"}]}' % (ring_names, kind_names),
+        "",
+        "attach_to のルール(依存パーツは相手の実物から作るので必須):",
+    ]
+    for part_type in sorted(ATTACH_TARGETS):
+        lines.append(
+            "  %s は attach_to に %s パーツの name を指定する"
+            % (part_type, ATTACH_TARGETS[part_type])
+        )
+    lines.append(
+        "  それ以外のパーツ(%s)は attach_to を書いてはいけない"
+        % ", ".join(sorted(set(PART_SCHEMAS) - DEPENDENT_PART_TYPES))
+    )
+    lines += [
+        "",
+        "joints のルール:",
+        '  kind "shared" は頂点を共有する接合。両パーツを同じ segments で作ること'
+        "(例: waistband の bottom と skirt_body の top)",
+        '  kind "sewn" は縫い合わせ。分割数が違ってよい'
+        "(例: bodice の armhole_l / armhole_r に sleeve の top を縫う)",
+        "  a_ring / b_ring に使えるのは %s。" % ring_names
+        + "armhole_l / armhole_r を持つのは bodice だけ",
         "",
         "type ごとに使える params(型・既定値・最小・最大):",
     ]
     for part_type, schema in sorted(PART_SCHEMAS.items()):
         lines.append("  %s:" % part_type)
         for field, (expected, default, low, high) in schema.items():
-            lines.append(
-                "    %s: %s 既定 %s 範囲 %s〜%s"
-                % (field, expected.__name__, default, low, high)
-            )
-    lines.append("")
-    lines.append("上記以外のキーを入れてはいけません。JSON 以外の文字を出力してはいけません。")
+            allowed = _ENUM_FIELDS.get(field)
+            if allowed:
+                lines.append("    %s: %s のいずれか 既定 %s" % (field, "|".join(allowed), default))
+            else:
+                lines.append(
+                    "    %s: %s 既定 %s 範囲 %s〜%s"
+                    % (field, expected.__name__, default, low, high)
+                )
+    lines += [
+        "",
+        "sizing キーは書いてはいけません(省略すればサイズ表の既定が使われます)。",
+        "spec に上記以外のキーを入れてはいけません。",
+    ]
     return "\n".join(lines)

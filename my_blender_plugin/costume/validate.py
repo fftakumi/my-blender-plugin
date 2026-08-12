@@ -62,6 +62,25 @@ CUFF_GATHER_MIN = 1.10
 #: これを下回ると楕円断面だけの胴(= メンズシャツ)と区別できない
 BUST_PROJECTION_MIN = 0.015
 
+# ---- ケープの「形」の定義(docs/garments.md)のしきい値 ----
+#: 裾の弧長 / 上端の弧長 の下限。これ未満は肩から広がっておらず、
+#: ただの開いた筒(=ケープではない)。**設計値**
+CAPE_MIN_FLARE = 1.3
+#: 裾の開き幅の許容差(比)。寸法ではなく「前が開いている」ことの確認なので広め
+CAPE_GAP_TOL = 0.10
+
+# ---- フードの「形」の定義(docs/garments.md)のしきい値 ----
+#: フードの高さの許容差(比)
+HOOD_DEPTH_TOL = 0.05
+
+# ---- パンツの「形」の定義(docs/garments.md)のしきい値 ----
+#: 股上・わたり・裾周の許容差(比)。すべて設計値由来の寸法なので少し広め
+PANTS_DIM_TOL = 0.05
+#: 股下の許容差(比)
+PANTS_INSEAM_TOL = 0.03
+#: 左右対称の許容: |左右の裾重心 x の和| / |差| の上限
+PANTS_SYMMETRY_TOL = 0.10
+
 
 # ------------------------------------------------------------------ 小物
 
@@ -537,6 +556,63 @@ def dominant_pleat_frequency(radii, depth_ratio=1.0, min_frequency=3):
     return (best, spectrum[best])
 
 
+def open_arc_length(verts, ring_indices):
+    """開いたリング(弧)の実長。ring_metrics と違い最初と最後を繋がない"""
+    points = [verts[index] for index in ring_indices]
+    return sum(_distance(points[index], points[index - 1]) for index in range(1, len(points)))
+
+
+def cape_metrics(mesh, shoulder_t=None):
+    """ケープの実測(メッシュだけから出す。生成側の申告は使わない)"""
+    top = mesh.rings.get("top") or []
+    bottom = mesh.rings.get("bottom") or []
+    top_arc = open_arc_length(mesh.verts, top)
+    hem_arc = open_arc_length(mesh.verts, bottom)
+    hem_gap = _distance(mesh.verts[bottom[0]], mesh.verts[bottom[-1]]) if bottom else 0.0
+    result = {
+        "measured_top_arc": top_arc,
+        "measured_hem_arc": hem_arc,
+        "measured_hem_gap": hem_gap,
+        "measured_cape_flare": (hem_arc / top_arc) if top_arc > 0.0 else 0.0,
+    }
+    # 肩の張り: **肩線に最も近いリング行だけ**の x 差し渡し。
+    # 「肩線の1.7倍までの窓の最大」で測ると、flare で広がり始めた行が窓に入り、
+    # リングが密・flare が急・丈が短いだけで設計値を超える誤検知になる
+    # (合法な spec の AI 出力が _prebuild_check で捨てられていた。PR #8 レビュー)。
+    # 行は ring_size × ring_count の添字構造から復元する
+    if shoulder_t is not None and mesh.ring_count > 1:
+        size, count = mesh.ring_size, mesh.ring_count
+        nearest = min(range(count), key=lambda row: abs(row / (count - 1) - shoulder_t))
+        result["shoulder_row_t"] = nearest / (count - 1)
+        xs = [
+            mesh.verts[index][0]
+            for index in range(nearest * size, (nearest + 1) * size)
+        ]
+        result["measured_shoulder_span"] = max(xs) - min(xs)
+    return result
+
+
+def hood_metrics(mesh):
+    """フードの実測(メッシュだけから出す)。
+
+    リング行は ring_size × ring_count の添字構造から復元する(holed でない前提)。
+    """
+    size, count = mesh.ring_size, mesh.ring_count
+    rows = [list(range(row * size, (row + 1) * size)) for row in range(count)]
+    arcs = [open_arc_length(mesh.verts, row) for row in rows]
+    gaps = [
+        _distance(mesh.verts[row[0]], mesh.verts[row[-1]]) for row in rows
+    ]
+    # リングは上(先端)から下(縫い目)へ並ぶ。縫い目 = 最終行
+    seam_top_z = max(mesh.verts[index][2] for index in rows[-1])
+    top_z = max(point[2] for point in mesh.verts)
+    return {
+        "measured_hood_max_arc": max(arcs),
+        "measured_hood_depth": top_z - seam_top_z,
+        "measured_hood_face_gap": max(gaps),
+    }
+
+
 # ------------------------------------------------------------------ パーツ1枚の検査
 
 
@@ -624,6 +700,7 @@ def part_report(mesh, height_units):
     }
 
     hard = {}
+    warn = {}
     hard["nonmanifold"] = _check(topo["nonmanifold_edges"] == 0, topo["nonmanifold_edges"], 0)
     hard["loose_verts"] = _check(topo["loose_verts"] == 0, topo["loose_verts"], 0)
     hard["winding"] = _check(
@@ -688,6 +765,105 @@ def part_report(mesh, height_units):
                 (pleat_frequency, pleat_amplitude),
                 "< %.4f" % PLEAT_AMPLITUDE_NOISE,
             )
+    # ---- ケープの定義(docs/garments.md)を検証項目にしたもの ----
+    if design.get("cape_top_arc"):
+        report.update(cape_metrics(mesh, design.get("cape_shoulder_t")))
+        # 肩の張り(ハンガー型)。ただの円錐はスカートに見える(ブラインド識別で実証)
+        if "cape_shoulder_span" in design:
+            if design["cape_shoulder_span"] and "measured_shoulder_span" in report:
+                hard["cape_sits_on_the_shoulders"] = _within(
+                    report["measured_shoulder_span"], design["cape_shoulder_span"], DIM_TOL
+                )
+            else:
+                # リング割りが粗くて肩線の近くに行が無い(builder が設計値を
+                # None にしている)。黙ってゲートを消さず warn に出す
+                warn["cape_shoulder_row_missing"] = _check(
+                    False, report.get("shoulder_row_t"), "肩線の近くにリング行が要る"
+                )
+        # 上端の弧長 = 首回り×(1+ゆとり)から前開きの楔を除いた製図値
+        hard["cape_top_arc"] = _within(
+            report["measured_top_arc"], design["cape_top_arc"], DIM_TOL
+        )
+        # 肩から裾へ広がっていること(下限は定義、値は spec との一致)
+        hard["cape_flares_from_the_shoulder"] = _check(
+            report["measured_cape_flare"] >= CAPE_MIN_FLARE,
+            report["measured_cape_flare"],
+            ">= %.2f" % CAPE_MIN_FLARE,
+        )
+        hard["cape_flare_matches_spec"] = _within(
+            report["measured_cape_flare"], design["cape_flare"], DIM_TOL
+        )
+        # 前が開いていること(裾の開き幅が設計どおり)
+        hard["cape_front_open"] = _within(
+            report["measured_hem_gap"], design["cape_hem_gap"], CAPE_GAP_TOL
+        )
+    # ---- パンツの定義(docs/garments.md)を検証項目にしたもの ----
+    if design.get("pants_rise"):
+        crotch_ring = mesh.rings.get("crotch") or []
+        crotch_z = (
+            sum(verts[index][2] for index in crotch_ring) / len(crotch_ring)
+            if crotch_ring
+            else None
+        )
+        report["measured_crotch_z"] = crotch_z
+        if top is not None and crotch_z is not None:
+            report["measured_rise"] = top["z"] - crotch_z
+            hard["pants_rise"] = _within(
+                report["measured_rise"], design["pants_rise"], PANTS_DIM_TOL
+            )
+        hems = {}
+        for side in ("l", "r"):
+            ring = mesh.rings.get("hem_" + side)
+            if not ring:
+                hard["pants_has_two_legs"] = _check(False, "hem_%s 無し" % side, "裾リング2本")
+                continue
+            hems[side] = ring_metrics(verts, ring)
+            report["measured_hem_perimeter_" + side] = hems[side]["perimeter"]
+            hard["pants_hem_" + side] = _within(
+                hems[side]["perimeter"], design["pants_hem"], PANTS_DIM_TOL
+            )
+            if crotch_z is not None:
+                report["measured_inseam_" + side] = crotch_z - hems[side]["z"]
+                hard["pants_inseam_" + side] = _within(
+                    report["measured_inseam_" + side],
+                    design["pants_inseam"],
+                    PANTS_INSEAM_TOL,
+                )
+            thigh_ring = mesh.rings.get("thigh_" + side)
+            if design.get("pants_thigh") and thigh_ring:
+                thigh = ring_metrics(verts, thigh_ring)
+                report["measured_thigh_perimeter_" + side] = thigh["perimeter"]
+                hard["pants_thigh_" + side] = _within(
+                    thigh["perimeter"], design["pants_thigh"], PANTS_DIM_TOL
+                )
+        if len(hems) == 2:
+            left_x = hems["l"]["center"][0]
+            right_x = hems["r"]["center"][0]
+            spread = abs(left_x - right_x)
+            hard["pants_legs_symmetric"] = _check(
+                spread > 0.0 and abs(left_x + right_x) <= PANTS_SYMMETRY_TOL * spread,
+                (left_x, right_x),
+                "裾の重心 x が左右対称",
+            )
+    # ---- フードの定義(docs/garments.md)を検証項目にしたもの ----
+    if design.get("hood_arc_floor"):
+        report.update(hood_metrics(mesh))
+        # 頭を包んでいること(一番太いリングが頭囲ゆとり込みの3/4以上)
+        hard["hood_wraps_the_head"] = _check(
+            report["measured_hood_max_arc"] >= design["hood_arc_floor"],
+            report["measured_hood_max_arc"],
+            ">= %.4f" % design["hood_arc_floor"],
+        )
+        # 頭が入る高さがあること(縫い目の上端から頂まで)
+        hard["hood_depth"] = _within(
+            report["measured_hood_depth"], design["hood_depth"], HOOD_DEPTH_TOL
+        )
+        # 顔の開口が開いていること
+        hard["hood_face_open"] = _check(
+            report["measured_hood_face_gap"] >= design["hood_face_gap_floor"],
+            report["measured_hood_face_gap"],
+            ">= %.4f" % design["hood_face_gap_floor"],
+        )
     # ---- ブラウスの定義(docs/garments.md)を検証項目にしたもの ----
     if design.get("shoulder_width"):
         report.update(bodice_metrics(mesh, design))
@@ -849,6 +1025,21 @@ def part_report(mesh, height_units):
             (report["buttons_inside_placket"], report["buttons_within_placket_z"]),
             "前立ての内側",
         )
+        # ---- 定義 #19: ボタンが前立ての表面に**沿っている** ----
+        # #14 の「内側にある」は x と z しか見ておらず、y(前後)の浮きを
+        # 検出できなかった(ワンピースで実証)。裏面と表面の離隔は
+        # standoff(意図した浮かせ)以上・ボタンの厚み以下であること
+        if report.get("measured_button_float_gap") is not None:
+            low, high = report["measured_button_float_gap"]
+            slack = max(
+                report["measured_button_thickness"] or 0.0,
+                design.get("button_standoff") or 0.0,
+            )
+            hard["buttons_touch_the_placket"] = _check(
+                low >= -1e-9 and high <= slack + 1e-9,
+                report["measured_button_float_gap"],
+                "0 〜 %.4f(表面から浮かず、沈まず)" % slack,
+            )
         # ---- 定義 #15: ボタン**そのものの形**。#14 は個数・間隔・位置しか見ていない ----
         if design.get("button_diameter"):
             hard["button_diameter"] = _within(
@@ -905,7 +1096,6 @@ def part_report(mesh, height_units):
     # (costume_report)で行う。パーツ単位の値は内訳として報告するだけ。
     report["_edge_lengths"] = all_lengths
 
-    warn = {}
     # CV は周方向と軸方向を分けて見る(混ぜると縦横比を不均一さと誤認する)
     for kind, lengths in (("ring", ring_lengths), ("axial", axial_lengths)):
         cv = _stats(lengths)["cv"]
@@ -1274,6 +1464,32 @@ def _button_shells(mesh, design, loops):
     )
 
 
+def _button_y_extents(mesh, design, heights):
+    """ボタンごとの y の範囲(裏面 = 最大 y、前面 = 最小 y)をメッシュから復元する。
+
+    各頂点をいちばん近いボタン(高さ)に割り当てる。設計値の申告(button_zs 等)は
+    使わない。厚みを**部品全体の y 幅**で測ると、ボタンが表面に沿って前後に
+    段差を持つ(ワンピース)だけで「厚い円盤」に化けるので、シェルごとに測る。
+    """
+    if not heights:
+        return None, None
+    radius = design.get("button_radius") or 0.0
+    tolerance = max(radius * 1.5, 1e-9)
+    backs = [None] * len(heights)
+    fronts = [None] * len(heights)
+    for _x, y, z in mesh.verts:
+        nearest = min(range(len(heights)), key=lambda i: abs(heights[i] - z))
+        if abs(heights[nearest] - z) > tolerance:
+            continue
+        if backs[nearest] is None or y > backs[nearest]:
+            backs[nearest] = y
+        if fronts[nearest] is None or y < fronts[nearest]:
+            fronts[nearest] = y
+    if any(back is None for back in backs):
+        return None, None
+    return backs, fronts
+
+
 def button_metrics(mesh, design):
     """ボタン列について定義 #14 を測る。
 
@@ -1287,10 +1503,17 @@ def button_metrics(mesh, design):
     half = design.get("placket_width", 0.0) / 2.0
 
     # 定義 #15: ボタン**そのものの形**。個数・間隔・位置は形を1つも測っていない。
-    # 直径は x の差し渡し(ボタンは x 中心に揃っている)、厚みは y の差し渡し
+    # 直径は x の差し渡し(ボタンは x 中心に揃っている)
     diameter = (max(xs) - min(xs)) if xs else 0.0
-    thickness = (max(ys) - min(ys)) if ys else 0.0
     count, heights, holes, hole_spread = _button_shells(mesh, design, loops)
+
+    backs, fronts = _button_y_extents(mesh, design, heights)
+    # 厚みは**シェルごと**の y 幅の最大。部品全体の y 幅だと、表面に沿って
+    # ボタンの前後位置が段差を持つだけで「厚い円盤」に化ける
+    if backs and fronts:
+        thickness = max(back - front for back, front in zip(backs, fronts))
+    else:
+        thickness = (max(ys) - min(ys)) if ys else 0.0
 
     # 高さは**メッシュから**復元したものを使う(設計値の申告ではない)
     zs = sorted(heights or [], reverse=True)
@@ -1300,9 +1523,33 @@ def button_metrics(mesh, design):
     if gaps and mean_gap > 0:
         variance = sum((gap - mean_gap) ** 2 for gap in gaps) / len(gaps)
         spread = math.sqrt(variance) / mean_gap
+    # 定義 #19: ボタンが前立ての**表面に沿っている**か。
+    # 各シェルの頂点ごとに「その z での表面 y − 頂点 y」(クリアランス)を測り、
+    # ボタン1個の**最小クリアランス**を見る。最小が負なら布に沈み、最小が
+    # 大きければボタン全体が布から浮いている(全体の最前点から一定 y に置く
+    # 旧実装は、前面が後退する胴 = ワンピースで浮いた)。中心1点の離隔で
+    # 見ないのは、表面が傾く区間では平らな円盤の中心が正当に離れるため
+    float_gap = None
+    surface_profile = design.get("placket_front_profile")
+    if surface_profile and heights:
+        from . import modulate as modulate_module
+
+        radius_tol = max((design.get("button_radius") or 0.0) * 1.5, 1e-9)
+        minimums = [None] * len(heights)
+        for _x, y, z in mesh.verts:
+            nearest = min(range(len(heights)), key=lambda i: abs(heights[i] - z))
+            if abs(heights[nearest] - z) > radius_tol:
+                continue
+            clearance = modulate_module.interp_profile(surface_profile, z) - y
+            if minimums[nearest] is None or clearance < minimums[nearest]:
+                minimums[nearest] = clearance
+        if all(value is not None for value in minimums):
+            float_gap = (min(minimums), max(minimums))
+
     return {
         "measured_button_count": count,
         "measured_button_zs": zs,
+        "measured_button_float_gap": float_gap,
         "measured_button_gap_cv": spread,
         "measured_button_gap": mean_gap,
         "measured_button_diameter": diameter,

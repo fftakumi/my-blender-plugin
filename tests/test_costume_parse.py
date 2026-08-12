@@ -31,6 +31,60 @@ def test_unknown_garment_gets_zero_confidence():
     result = parse_text.parse("かっこいい鎧")
     assert result["confidence"] == 0.0
     assert result["notes"]
+    # 何で代用するかを notes で明示する(黙ってスカートを出さない)
+    assert any("skirt_flare" in note for note in result["notes"])
+
+
+def test_blouse_words_pick_the_blouse_preset():
+    result = parse_text.parse("白いブラウス")
+    assert result["base_preset"] == "blouse"
+    types = [part["type"] for part in result["spec"]["parts"]]
+    assert "bodice" in types
+    # 色はブラウスにも効く
+    assert result["spec"]["materials"]["main"]["base_color"] == list(
+        parse_text.hex_to_linear("#f2f2f0")
+    )
+
+
+def test_shirt_words_also_reach_the_blouse_preset():
+    assert parse_text.parse("シャツ")["base_preset"] == "blouse"
+    assert parse_text.parse("white shirt")["base_preset"] == "blouse"
+
+
+def test_a_scarf_is_not_a_skirt():
+    """「スカ」の部分一致で「スカーフ」がスカート扱いにならないこと"""
+    result = parse_text.parse("赤いスカーフ")
+    assert "garment" not in result["matched"]
+    assert result["confidence"] == 0.0
+
+
+def test_blouse_text_builds_and_validates():
+    result = parse_text.parse("白いブラウス")
+    normalized = spec_module.normalize_spec(result["spec"])
+    report = validate.costume_report(parts.build_all(normalized), normalized)
+    assert report["failed"] == [], report["failed"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "   ",
+        "かっこいい鎧",
+        "🦄✨🌈",
+        "1234567890",
+        "a" * 2000,
+        "\x00\x01\x02\t\n改行\r混じり",
+        "スカーフとリボンと帽子",
+    ],
+)
+def test_any_string_parses_builds_and_validates_without_raising(text):
+    """未知・異常な入力でも parse→normalize→build が例外を投げないこと。
+    出来がフォールバック品質でも、必ず「何かは作れる」状態を保証する"""
+    result = parse_text.parse(text)
+    normalized = spec_module.normalize_spec(result["spec"])
+    built = parts.build_all(normalized)
+    assert built["parts"]
 
 
 def test_pleated_navy_mini_skirt():

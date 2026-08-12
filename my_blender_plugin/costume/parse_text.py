@@ -93,9 +93,34 @@ SILHOUETTE_WORDS = {
     "aline": {"flare": 1.4, "flare_curve": 1.0, "drape_folds": 10, "drape_depth": 0.04},
 }
 
-#: 衣装の種類。今は作れるのがスカートだけなので、それ以外は confidence を出さない
+#: 衣装の種類 → 土台にする同梱プリセット。
+#: 解釈の主役は AI(ai_bridge)なので、ここは AI が使えないときの
+#: フォールバック品質の最低保証。プリセットを増やしたらここに1行足す。
+#: 語彙を網羅的に増やすことはしない(それは AI の仕事)
+GARMENT_PRESETS = {
+    "skirt": "skirt_flare",
+    "blouse": "blouse",
+    "vest": "vest",
+    "cape": "cape",
+    "hood": "hooded_cape",
+    "dress": "onepiece",
+    "pants": "pants",
+}
+
+#: 衣装の種類の見出し語。値は GARMENT_PRESETS のキー。
+#: 「スカ」のような短い部分語は入れない(「スカーフ」が自信ありでスカートになる)
 GARMENT_WORDS = {
-    "スカート": "skirt", "skirt": "skirt", "スカ": "skirt",
+    "スカート": "skirt", "skirt": "skirt",
+    "ブラウス": "blouse", "blouse": "blouse",
+    "シャツ": "blouse", "shirt": "blouse",
+    "ワイシャツ": "blouse", "トップス": "blouse",
+    "ベスト": "vest", "vest": "vest", "ジレ": "vest",
+    # フードはケープ・マントより**先に**書く。_find_words は同じ長さなら辞書の
+    # 並び順で返すので、「フード付きのマント」はフード付きの側(hooded_cape)が勝つ
+    "フード": "hood", "hood": "hood", "hoodie": "hood", "パーカー": "hood",
+    "ケープ": "cape", "cape": "cape", "マント": "cape", "ポンチョ": "cape",
+    "ワンピース": "dress", "onepiece": "dress", "ドレス": "dress", "dress": "dress",
+    "パンツ": "pants", "ズボン": "pants", "スラックス": "pants", "pants": "pants",
 }
 
 #: 「24本プリーツ」「プリーツ32」などから山数を拾う
@@ -179,18 +204,24 @@ def parse(text, base_preset="skirt_flare"):
     """説明文から spec(正規化前)を組み立てる。
 
     戻り値: {"spec": dict, "matched": {分類: [語]}, "confidence": 0.0-1.0,
-             "notes": [人向けの補足]}
-    confidence が 0.0 なら衣装の種類が分からなかった = AI に回す判断材料。
+             "notes": [人向けの補足], "base_preset": 土台にしたプリセット名}
+    confidence が 0.0 なら衣装の種類が分からなかった(フォールバック警告の判断材料)。
     """
     if not isinstance(text, str):
         raise TypeError("text は文字列にしてください: %r" % (text,))
 
-    spec = spec_module.load_preset(base_preset)
+    # 先に衣装の種類を見て、対応するプリセットを土台にする。
+    # 分からなければ引数の base_preset(既定はフレアスカート)のまま
+    garments = _find_words(text, GARMENT_WORDS)
+    preset_name = base_preset
+    if garments:
+        preset_name = GARMENT_PRESETS[GARMENT_WORDS[garments[0]]]
+
+    spec = spec_module.load_preset(preset_name)
     spec["name"] = "parsed_costume"
     matched = {}
     notes = []
 
-    garments = _find_words(text, GARMENT_WORDS)
     if garments:
         matched["garment"] = garments
 
@@ -249,12 +280,15 @@ def parse(text, base_preset="skirt_flare"):
     if body is not None:
         _fix_density(spec, body, notes)
 
-    # 種類が分からなければ何も作れない。
+    # 種類が分からなければ形は当てずっぽう。
     # **形の情報(シルエット・丈)を色や素材より重く見る。** 色だけ当たっても
-    # 形は既定値の当てずっぽうなので、そこは AI に読ませたほうが良い結果になる。
+    # 形は既定値のままなので、そこは AI に読ませたほうが良い結果になる。
     if not garments:
         confidence = 0.0
-        notes.append("衣装の種類を特定できなかった(作れるのは今のところスカートだけ)")
+        notes.append(
+            "衣装の種類を特定できなかった(辞書にあるのは %s)。プリセット %s を土台にする"
+            % ("・".join(sorted(set(GARMENT_WORDS.values()))), preset_name)
+        )
     else:
         confidence = 0.4
         confidence += 0.25 * sum(
@@ -274,4 +308,5 @@ def parse(text, base_preset="skirt_flare"):
         "matched": matched,
         "confidence": round(min(1.0, confidence), 3),
         "notes": notes,
+        "base_preset": preset_name,
     }

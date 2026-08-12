@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "name": "cape",
+  "assumed_height": 1.58,
+  "ease": 0.03,
+  "meters_per_unit": 1.0,
+  "poly_budget": 3000,
+  "materials": {
+    "main": {
+      "base_color": [0.3, 0.05, 0.07],
+      "roughness": 0.75,
+      "sheen": 0.3
+    }
+  },
+  "parts": [
+    {
+      "type": "cape",
+      "name": "Cape_Body",
+      "material": "main",
+      "params": {
+        "neck_z": 0.82,
+        "length": 0.3,
+        "segments": 28,
+        "rings": 12,
+        "neck_ease": 0.35,
+        "flare": 1.5,
+        "flare_curve": 1.0,
+        "front_open_degrees": 40.0
+      }
+    },
+    {
+      "type": "collar",
+      "name": "Cape_Collar",
+      "material": "main",
+      "attach_to": "Cape_Body",
+      "params": {
+        "height_ratio": 0.022,
+        "rings": 3,
+        "flare": 1.06
+      }
+    }
+  ],
+  "joints": [
+    {
+      "a": "Cape_Body",
+      "a_ring": "top",
+      "b": "Cape_Collar",
+      "b_ring": "bottom",
+      "kind": "shared"
+    }
+  ]
+}

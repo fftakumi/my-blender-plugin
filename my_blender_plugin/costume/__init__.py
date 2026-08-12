@@ -14,10 +14,11 @@ ImportError で落ちる。bpy依存モジュールは呼ぶ側が使う直前�
 """
 
 # 依存の浅い順。importlib.reload はサブモジュールを辿らないので自分で並べる。
+# modulate は spec より先(spec が _PANTS の blend 上限に THIGH_HOLD_T を使う)
 _MODULE_NAMES = (
+    "modulate",
     "spec",
     "sizing",
-    "modulate",
     "kernels",
     "validate",
     "silhouette",
