@@ -22,7 +22,7 @@ my_blender_plugin/          # アドオン本体(このディレクトリをzip�
 ├── panels.py               # UIパネル定義(3Dビューポートのサイドバー「My Plugin」タブ)
 └── costume/                # 衣装生成(詳細は下の「衣装生成サブパッケージ」)
     ├── spec.py sizing.py modulate.py kernels.py parts.py validate.py   # bpy非依存
-    ├── parse_text.py palette.py ai_bridge.py                           # bpy非依存
+    ├── parse_text.py palette.py ai_bridge.py async_bridge.py           # bpy非依存
     ├── build.py materials.py                                           # bpy依存
     └── presets/*.json      # 同梱 spec(zip に入る位置に置く)
 tests/

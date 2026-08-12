@@ -2,7 +2,13 @@ import hashlib
 
 import bpy
 
-from .costume import ai_bridge, parts as costume_parts, spec as costume_spec, validate
+from .costume import (
+    ai_bridge,
+    async_bridge,
+    parts as costume_parts,
+    spec as costume_spec,
+    validate,
+)
 
 
 def grid_positions(count, spacing):
@@ -505,6 +511,83 @@ def _preset_items():
     ]
 
 
+def _consume_text_result(op, result, default_height, use_ai):
+    """spec_from_text の結果をユーザーへ報告し、(spec, origin, height) を返す。
+
+    生成本体と AI 待ちモーダルの両オペレーターが同じ報告を出すための共通部。
+    """
+    spec = result["spec"]
+    origin = "説明文(%s)" % result["source"]
+    # 辞書解析の notes は辞書結果を使ったときだけ出す。AI 採用時に
+    # 「種類を特定できなかった」等が INFO に出ると紛らわしい
+    if result["source"] == "keywords":
+        for note in result["parse"]["notes"]:
+            op.report({"INFO"}, note)
+    for item in result["unsupported"]:
+        op.report({"INFO"}, "AI: %s(spec からは省いた)" % item)
+    if result["fallback_warning"]:
+        op.report({"WARNING"}, result["fallback_warning"])
+    elif result["ai_error"]:
+        # ユーザーが自分でオフにした場合は異常ではないので INFO
+        level = {"WARNING"} if use_ai else {"INFO"}
+        op.report(level, "AI に頼れませんでした: %s" % result["ai_error"])
+    # 身長はダイアログ値が既定。説明文に明記されていた場合だけそちらが勝つ
+    # (以前は無条件でダイアログ値が上書きし、「身長160cm」が死んでいた)
+    height = default_height
+    if result["explicit_height"] is not None:
+        height = result["explicit_height"]
+        op.report(
+            {"INFO"},
+            "説明文の身長 %.2fm を使う(ダイアログの値より優先)" % height,
+        )
+    return spec, origin, height
+
+
+def _finish_build(op, context, spec, origin, height):
+    """spec 確定後の共通処理: 画像の色 → 正規化 → ビルド → 検証 → 報告。
+
+    op には image_path / image_colors / meters_per_unit のプロパティが要る。
+    build / image_input は bmesh / bpy.data を使うので、フェイク bpy のテスト環境で
+    import されないようここで遅延 import する(_coverage_weights と同じ理由)。
+    """
+    from .costume import build as costume_build, image_input
+
+    try:
+        if op.image_path.strip():
+            for note in image_input.apply_image(
+                spec, op.image_path, count=op.image_colors
+            ):
+                op.report({"INFO"}, note)
+            origin += " + 画像の色"
+        spec["meters_per_unit"] = op.meters_per_unit
+        spec["assumed_height"] = height
+        spec = costume_spec.normalize_spec(spec)
+    except (costume_spec.SpecError, image_input.ImageInputError, ValueError) as error:
+        op.report({"ERROR"}, "spec を組み立てられませんでした: %s" % error)
+        return {"CANCELLED"}
+
+    try:
+        created = costume_build.build_costume(spec, context.scene)
+    except (costume_parts.PartError, ValueError, RuntimeError) as error:
+        op.report({"ERROR"}, "生成に失敗しました: %s" % error)
+        return {"CANCELLED"}
+
+    report = validate.costume_report(created["built"], spec)
+    message = "%s から %s: %s(頂点 %d / 面 %d / エッジ長比 %.4f)" % (
+        origin,
+        created["collection"].name,
+        report["verdict"],
+        report["totals"]["verts"],
+        report["totals"]["faces"],
+        report["edge_length_over_h"] or 0.0,
+    )
+    if report["failed"]:
+        op.report({"WARNING"}, message + " 不合格: " + ", ".join(report["failed"]))
+    else:
+        op.report({"INFO"}, message)
+    return {"FINISHED"}
+
+
 class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
     """説明文またはプリセットから衣装メッシュとマテリアルを生成する"""
 
@@ -554,7 +637,8 @@ class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
         name="AIに解釈させる(claude -p)",
         description=(
             "説明文の解釈を claude -p に任せる(辞書より多様な衣装が作れる)。"
-            "応答を待つ間 UI が固まる(実測で1分前後。作り直しが入ると2回分)。"
+            "応答待ち(実測1分前後。作り直しが入ると2回分)は別スレッドで行うので、"
+            "その間も Blender を操作できる(ESC で中止)。"
             "claude CLI が無い環境では待たずに辞書の結果へフォールバックする。"
             "オフにすると外部プロセスを起動せず、キーワード辞書だけで解釈する"
         ),
@@ -586,76 +670,35 @@ class MYPLUGIN_OT_generate_costume(bpy.types.Operator):
         return context.window_manager.invoke_props_dialog(self, width=420)
 
     def execute(self, context):
-        # build / image_input は bmesh / bpy.data を使うので、フェイク bpy のテスト環境で
-        # import されないようここで遅延 import する(_coverage_weights と同じ理由)
-        from .costume import build as costume_build, image_input
+        if self.source == "TEXT" and self.use_ai:
+            # AI の応答待ち(実測1分前後)で UI を固めないよう、
+            # モーダル版のオペレーターへ引き継いで即座に返る
+            bpy.ops.myplugin.generate_costume_ai(
+                "INVOKE_DEFAULT",
+                description=self.description,
+                image_path=self.image_path,
+                image_colors=self.image_colors,
+                meters_per_unit=self.meters_per_unit,
+                assumed_height=self.assumed_height,
+            )
+            return {"FINISHED"}
 
         try:
-            # 身長はダイアログ値が既定。説明文に明記されていた場合だけそちらが勝つ
-            # (以前は無条件でダイアログ値が上書きし、「身長160cm」が死んでいた)
-            height = self.assumed_height
             if self.source == "PRESET":
                 spec = costume_spec.load_preset(self.preset)
                 origin = "プリセット %s" % self.preset
+                height = self.assumed_height
             else:
-                result = ai_bridge.spec_from_text(
-                    self.description,
-                    runner=None if self.use_ai else _refuse_ai,
+                # AI オフ: 外部プロセスを起動しない即時経路なので同期のまま
+                result = ai_bridge.spec_from_text(self.description, runner=_refuse_ai)
+                spec, origin, height = _consume_text_result(
+                    self, result, self.assumed_height, use_ai=False
                 )
-                spec = result["spec"]
-                origin = "説明文(%s)" % result["source"]
-                # 辞書解析の notes は辞書結果を使ったときだけ出す。AI 採用時に
-                # 「種類を特定できなかった」等が INFO に出ると紛らわしい
-                if result["source"] == "keywords":
-                    for note in result["parse"]["notes"]:
-                        self.report({"INFO"}, note)
-                for item in result["unsupported"]:
-                    self.report({"INFO"}, "AI: %s(spec からは省いた)" % item)
-                if result["fallback_warning"]:
-                    self.report({"WARNING"}, result["fallback_warning"])
-                elif result["ai_error"]:
-                    # ユーザーが自分でオフにした場合は異常ではないので INFO
-                    level = {"INFO"} if not self.use_ai else {"WARNING"}
-                    self.report(level, "AI に頼れませんでした: %s" % result["ai_error"])
-                if result["explicit_height"] is not None:
-                    height = result["explicit_height"]
-                    self.report(
-                        {"INFO"},
-                        "説明文の身長 %.2fm を使う(ダイアログの値より優先)" % height,
-                    )
-            if self.image_path.strip():
-                for note in image_input.apply_image(
-                    spec, self.image_path, count=self.image_colors
-                ):
-                    self.report({"INFO"}, note)
-                origin += " + 画像の色"
-            spec["meters_per_unit"] = self.meters_per_unit
-            spec["assumed_height"] = height
-            spec = costume_spec.normalize_spec(spec)
-        except (costume_spec.SpecError, image_input.ImageInputError, ValueError) as error:
+        except (costume_spec.SpecError, ValueError) as error:
             self.report({"ERROR"}, "spec を組み立てられませんでした: %s" % error)
             return {"CANCELLED"}
 
-        try:
-            created = costume_build.build_costume(spec, context.scene)
-        except (costume_parts.PartError, ValueError, RuntimeError) as error:
-            self.report({"ERROR"}, "生成に失敗しました: %s" % error)
-            return {"CANCELLED"}
-
-        report = validate.costume_report(created["built"], spec)
-        message = "%s から %s: %s(頂点 %d / 面 %d / エッジ長比 %.4f)" % (
-            origin,
-            created["collection"].name,
-            report["verdict"],
-            report["totals"]["verts"],
-            report["totals"]["faces"],
-            report["edge_length_over_h"] or 0.0,
-        )
-        if report["failed"]:
-            self.report({"WARNING"}, message + " 不合格: " + ", ".join(report["failed"]))
-        else:
-            self.report({"INFO"}, message)
-        return {"FINISHED"}
+        return _finish_build(self, context, spec, origin, height)
 
 
 def _refuse_ai(_prompt):
@@ -665,11 +708,107 @@ def _refuse_ai(_prompt):
     )
 
 
+class MYPLUGIN_OT_generate_costume_ai(bpy.types.Operator):
+    """AI の応答待ちで UI を固めないための内部オペレーター(モーダル)。
+
+    生成ダイアログ(MYPLUGIN_OT_generate_costume)の execute から
+    INVOKE_DEFAULT で呼ばれる。invoke が `claude -p` 待ちを別スレッド
+    (costume/async_bridge.py)へ逃がし、modal がタイマーで完了を拾って
+    メッシュ生成はメインスレッドで行う(bpy はスレッドセーフではない)。
+    待っている間のイベントは PASS_THROUGH で素通しするので通常の操作ができる。
+    """
+
+    bl_idname = "myplugin.generate_costume_ai"
+    bl_label = "衣装を生成(AI解釈)"
+    bl_description = (
+        "説明文を claude -p に解釈させて衣装を生成する(内部用)。"
+        "応答待ちは別スレッドで行い、その間も Blender を操作できる。ESC で中止"
+    )
+    # INTERNAL: F3 検索に「衣装を生成」を二重に出さない
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    description: bpy.props.StringProperty(
+        name="説明", description="作りたい衣装の説明", default=""
+    )
+    image_path: bpy.props.StringProperty(
+        name="参考画像", description="色を取る画像(空なら説明文の色)", default="",
+        subtype="FILE_PATH",
+    )
+    image_colors: bpy.props.IntProperty(
+        name="画像から取る色数", description="1色目が主色、残りは accent",
+        default=3, min=1, max=8,
+    )
+    meters_per_unit: bpy.props.FloatProperty(
+        name="1unitのメートル数", description="シーンのスケール", default=1.0, min=1e-6
+    )
+    assumed_height: bpy.props.FloatProperty(
+        name="想定身長(m)", description="寸法の基準", default=1.53, min=0.1
+    )
+
+    def invoke(self, context, event):
+        if context.window is None:
+            # headless(--background)にはウィンドウもタイマーも無い。同期で実行する
+            return self.execute(context)
+        self._job = async_bridge.AsyncSpecJob(self.description).start()
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.2, window=context.window)
+        wm.modal_handler_add(self)
+        self._set_status(context, "衣装: AI が説明文を解釈中…(ESC で中止)")
+        self.report(
+            {"INFO"},
+            "AI に説明文の解釈を頼みました(待つ間も操作できます。ESC で中止)",
+        )
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type == "ESC":
+            # スレッドは放置して結果を捨てる(subprocess は ai_bridge の
+            # timeout が上限を張るので自然に終わる)
+            self._cleanup(context)
+            self.report({"WARNING"}, "衣装生成を中止しました(AI の応答は捨てます)")
+            return {"CANCELLED"}
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}  # 待っている間も通常の操作を素通しする
+        outcome = self._job.poll()
+        if outcome is None:
+            return {"PASS_THROUGH"}
+        # タイマーは build の失敗経路でも必ず外す(先に外してから続きをやる)
+        self._cleanup(context)
+        if "error" in outcome:
+            self.report({"ERROR"}, "説明文の解釈に失敗しました: %s" % outcome["error"])
+            return {"CANCELLED"}
+        spec, origin, height = _consume_text_result(
+            self, outcome["result"], self.assumed_height, use_ai=True
+        )
+        return _finish_build(self, context, spec, origin, height)
+
+    def execute(self, context):
+        # F9(調整パネル)の再実行やスクリプトの EXEC 呼び出し用の同期版
+        result = ai_bridge.spec_from_text(self.description)
+        spec, origin, height = _consume_text_result(
+            self, result, self.assumed_height, use_ai=True
+        )
+        return _finish_build(self, context, spec, origin, height)
+
+    def _cleanup(self, context):
+        timer = getattr(self, "_timer", None)
+        if timer is not None:
+            context.window_manager.event_timer_remove(timer)
+            self._timer = None
+        self._set_status(context, None)
+
+    def _set_status(self, context, text):
+        workspace = getattr(context, "workspace", None)
+        if workspace is not None:
+            workspace.status_text_set(text)
+
+
 _classes = (
     MYPLUGIN_OT_hello,
     MYPLUGIN_OT_add_cube_grid,
     MYPLUGIN_OT_fit_body_to_corset,
     MYPLUGIN_OT_generate_costume,
+    MYPLUGIN_OT_generate_costume_ai,
 )
 
 
