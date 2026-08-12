@@ -71,3 +71,68 @@ def test_hem_style_rejects_unknown_values():
 def test_parse_reaches_the_onepiece_preset():
     assert parse_text.parse("白いワンピース")["base_preset"] == "onepiece"
     assert parse_text.parse("紺のドレス")["base_preset"] == "onepiece"
+
+
+# ---------------------------------------- 定義 #19: ボタンが表面に沿う
+# レンダーの目視で「ボタンが服から離れている」欠陥が見つかった(前立て全体の
+# 最前点から一定 y に置いていたため、前面が後退するウエストで浮いた)。
+# docs の方針どおり、欠陥を先にゲートへ翻訳してから直した。
+
+
+def test_interp_profile_follows_the_polyline():
+    from my_blender_plugin.costume import modulate
+
+    profile = [(1.0, 10.0), (0.5, 20.0), (0.0, 20.0)]
+    assert modulate.interp_profile(profile, 1.0) == 10.0
+    assert modulate.interp_profile(profile, 0.75) == pytest.approx(15.0)
+    assert modulate.interp_profile(profile, 0.25) == 20.0
+    assert modulate.interp_profile(profile, 2.0) == 10.0  # 範囲外は端
+    assert modulate.interp_profile(profile, -1.0) == 20.0
+    with pytest.raises(ValueError):
+        modulate.interp_profile([], 0.5)
+
+
+def test_buttons_hug_the_receding_front():
+    """ワンピースの絞られたウエストでも、全ボタンの最小クリアランスが
+    standoff どおり(浮きも沈みも無い)であること"""
+    normalized, built = build_onepiece()
+    report = validate.costume_report(built, normalized)
+    entry = next(e for e in report["parts"] if e["part"] == "Dress_Buttons")
+    low, high = entry["measured_button_float_gap"]
+    standoff = entry["design"]["button_standoff"]
+    assert low == pytest.approx(standoff, rel=0.01)
+    assert entry["hard"]["buttons_touch_the_placket"]["ok"]
+
+
+def test_floating_a_button_in_the_mesh_breaks_the_touch_gate():
+    """design はそのまま、1個のボタンの頂点だけ前(−y)へ2cm出す → 捕まえる"""
+    import copy
+
+    normalized, built = build_onepiece()
+    buttons = next(mesh for mesh in built["parts"] if mesh.name == "Dress_Buttons")
+    tampered = copy.deepcopy(buttons)
+    target_z = tampered.design["button_zs"][0]
+    radius = tampered.design["button_radius"]
+    tampered.verts = [
+        (x, y - 0.02, z) if abs(z - target_z) <= radius * 1.2 else (x, y, z)
+        for x, y, z in tampered.verts
+    ]
+    after = validate.part_report(tampered, 1.58)
+    assert "buttons_touch_the_placket" in after["failed"]
+
+
+def test_sinking_a_button_in_the_mesh_breaks_the_touch_gate():
+    """逆に布へ沈めても(+y)捕まえる"""
+    import copy
+
+    normalized, built = build_onepiece()
+    buttons = next(mesh for mesh in built["parts"] if mesh.name == "Dress_Buttons")
+    tampered = copy.deepcopy(buttons)
+    target_z = tampered.design["button_zs"][-1]
+    radius = tampered.design["button_radius"]
+    tampered.verts = [
+        (x, y + 0.01, z) if abs(z - target_z) <= radius * 1.2 else (x, y, z)
+        for x, y, z in tampered.verts
+    ]
+    after = validate.part_report(tampered, 1.58)
+    assert "buttons_touch_the_placket" in after["failed"]

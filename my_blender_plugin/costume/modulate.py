@@ -46,6 +46,27 @@ def ellipse_semi_major(perimeter, depth_ratio):
     return perimeter / ellipse_perimeter(1.0, depth_ratio)
 
 
+def interp_profile(profile, z):
+    """(z, 値) を上から下へ並べた折れ線を z で線形補間する(範囲外は端の値)。
+
+    胴の前面プロファイルや前立ての表面プロファイルの参照に使う。
+    生成側と検証側が**同じ補間**で表面を読むための共有実装。
+    """
+    if not profile:
+        raise ValueError("profile が空です")
+    if z >= profile[0][0]:
+        return profile[0][1]
+    for index in range(1, len(profile)):
+        upper_z, upper_value = profile[index - 1]
+        lower_z, lower_value = profile[index]
+        if lower_z <= z <= upper_z:
+            if upper_z == lower_z:
+                return lower_value
+            local = (upper_z - z) / (upper_z - lower_z)
+            return upper_value + (lower_value - upper_value) * local
+    return profile[-1][1]
+
+
 def ellipse_arc(semi_major, depth_ratio, start_angle, end_angle, steps=512):
     """楕円弧の長さ(kernels.ring_from_polar と同じパラメータ化: x=r·cosθ, y=r·sinθ·b)。
 

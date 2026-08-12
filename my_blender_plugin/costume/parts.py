@@ -1232,6 +1232,12 @@ def build_placket(part, table, scale, host=None):
         "placket_top_z": top_z,
         "placket_bottom_z": bottom_z,
         "placket_front_y": min(point[1] for ring in ring_points for point in ring),
+        # 前立て中央(いちばん前)の表面の (z, y)。ボタンはこの面に沿って置く。
+        # 単一の placket_front_y(全体の最前点)だけだと、前面が z で動く胴
+        # (ワンピースの胸→ウエスト)でボタンが布から浮く
+        "placket_front_profile": [
+            (z, front_y(z) - standoff - bulge) for z in heights
+        ],
         # 覆う相手。これより狭いと前開きが黒い筋として見える
         "front_gap_width": (host.design or {}).get("front_gap_width"),
     }
@@ -1259,8 +1265,23 @@ def build_buttons(part, table, scale, host=None):
         params["top_inset"],
         params["bottom_inset"],
     )
-    # 前立ての表面よりわずかに前。触れさせると面が交差して不合格になる
-    base_y = design["placket_front_y"] - params["standoff"] * table["height"] * scale
+    # 前立ての表面よりわずかに前。触れさせると面が交差して不合格になる。
+    # 表面は z で動く(胸の張り出し・ウエストの絞り)ので、ボタンごとに
+    # **その高さの表面**から浮かせる。全体の最前点からの一定 y に置くと、
+    # 前面が後退する区間でボタンが宙に浮く(ワンピースで実証)
+    standoff = params["standoff"] * table["height"] * scale
+    surface = design.get("placket_front_profile")
+
+    def base_y_at(z):
+        if not surface:
+            return design["placket_front_y"] - standoff
+        # ボタンは平らな円盤のまま置くので、**ディスクの z 幅全体**で表面より
+        # 前に出す(中心の高さだけ見ると、表面が傾く区間で縁が布に食い込む)
+        span = [z - radius, z, z + radius] + [
+            knot for knot, _value in surface if z - radius <= knot <= z + radius
+        ]
+        return min(modulate.interp_profile(surface, s) for s in span) - standoff
+
     segments = max(6, params["segments"])
     angles = modulate.circle_angles(segments)
 
@@ -1294,6 +1315,7 @@ def build_buttons(part, table, scale, host=None):
 
     verts, quads, uv_loops = [], [], []
     for z in zs:
+        base_y = base_y_at(z)
         shell = [
             [
                 (
@@ -1350,6 +1372,10 @@ def build_buttons(part, table, scale, host=None):
         "placket_width": design["placket_width"],
         "placket_top_z": design["placket_top_z"],
         "placket_bottom_z": design["placket_bottom_z"],
+        # ボタンが前立ての**表面に沿っている**ことの検証用(定義 #19)。
+        # 表面プロファイルは前立ての実物から、離隔は自分の standoff
+        "placket_front_profile": design.get("placket_front_profile"),
+        "button_standoff": standoff,
         # --- 定義 #15(ボタンそのものの形) ---
         "button_diameter": radius * 2.0,
         "button_thickness": thickness,

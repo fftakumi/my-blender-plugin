@@ -997,6 +997,21 @@ def part_report(mesh, height_units):
             (report["buttons_inside_placket"], report["buttons_within_placket_z"]),
             "前立ての内側",
         )
+        # ---- 定義 #19: ボタンが前立ての表面に**沿っている** ----
+        # #14 の「内側にある」は x と z しか見ておらず、y(前後)の浮きを
+        # 検出できなかった(ワンピースで実証)。裏面と表面の離隔は
+        # standoff(意図した浮かせ)以上・ボタンの厚み以下であること
+        if report.get("measured_button_float_gap") is not None:
+            low, high = report["measured_button_float_gap"]
+            slack = max(
+                report["measured_button_thickness"] or 0.0,
+                design.get("button_standoff") or 0.0,
+            )
+            hard["buttons_touch_the_placket"] = _check(
+                low >= -1e-9 and high <= slack + 1e-9,
+                report["measured_button_float_gap"],
+                "0 〜 %.4f(表面から浮かず、沈まず)" % slack,
+            )
         # ---- 定義 #15: ボタン**そのものの形**。#14 は個数・間隔・位置しか見ていない ----
         if design.get("button_diameter"):
             hard["button_diameter"] = _within(
@@ -1422,6 +1437,32 @@ def _button_shells(mesh, design, loops):
     )
 
 
+def _button_y_extents(mesh, design, heights):
+    """ボタンごとの y の範囲(裏面 = 最大 y、前面 = 最小 y)をメッシュから復元する。
+
+    各頂点をいちばん近いボタン(高さ)に割り当てる。設計値の申告(button_zs 等)は
+    使わない。厚みを**部品全体の y 幅**で測ると、ボタンが表面に沿って前後に
+    段差を持つ(ワンピース)だけで「厚い円盤」に化けるので、シェルごとに測る。
+    """
+    if not heights:
+        return None, None
+    radius = design.get("button_radius") or 0.0
+    tolerance = max(radius * 1.5, 1e-9)
+    backs = [None] * len(heights)
+    fronts = [None] * len(heights)
+    for _x, y, z in mesh.verts:
+        nearest = min(range(len(heights)), key=lambda i: abs(heights[i] - z))
+        if abs(heights[nearest] - z) > tolerance:
+            continue
+        if backs[nearest] is None or y > backs[nearest]:
+            backs[nearest] = y
+        if fronts[nearest] is None or y < fronts[nearest]:
+            fronts[nearest] = y
+    if any(back is None for back in backs):
+        return None, None
+    return backs, fronts
+
+
 def button_metrics(mesh, design):
     """ボタン列について定義 #14 を測る。
 
@@ -1435,10 +1476,17 @@ def button_metrics(mesh, design):
     half = design.get("placket_width", 0.0) / 2.0
 
     # 定義 #15: ボタン**そのものの形**。個数・間隔・位置は形を1つも測っていない。
-    # 直径は x の差し渡し(ボタンは x 中心に揃っている)、厚みは y の差し渡し
+    # 直径は x の差し渡し(ボタンは x 中心に揃っている)
     diameter = (max(xs) - min(xs)) if xs else 0.0
-    thickness = (max(ys) - min(ys)) if ys else 0.0
     count, heights, holes, hole_spread = _button_shells(mesh, design, loops)
+
+    backs, fronts = _button_y_extents(mesh, design, heights)
+    # 厚みは**シェルごと**の y 幅の最大。部品全体の y 幅だと、表面に沿って
+    # ボタンの前後位置が段差を持つだけで「厚い円盤」に化ける
+    if backs and fronts:
+        thickness = max(back - front for back, front in zip(backs, fronts))
+    else:
+        thickness = (max(ys) - min(ys)) if ys else 0.0
 
     # 高さは**メッシュから**復元したものを使う(設計値の申告ではない)
     zs = sorted(heights or [], reverse=True)
@@ -1448,9 +1496,33 @@ def button_metrics(mesh, design):
     if gaps and mean_gap > 0:
         variance = sum((gap - mean_gap) ** 2 for gap in gaps) / len(gaps)
         spread = math.sqrt(variance) / mean_gap
+    # 定義 #19: ボタンが前立ての**表面に沿っている**か。
+    # 各シェルの頂点ごとに「その z での表面 y − 頂点 y」(クリアランス)を測り、
+    # ボタン1個の**最小クリアランス**を見る。最小が負なら布に沈み、最小が
+    # 大きければボタン全体が布から浮いている(全体の最前点から一定 y に置く
+    # 旧実装は、前面が後退する胴 = ワンピースで浮いた)。中心1点の離隔で
+    # 見ないのは、表面が傾く区間では平らな円盤の中心が正当に離れるため
+    float_gap = None
+    surface_profile = design.get("placket_front_profile")
+    if surface_profile and heights:
+        from . import modulate as modulate_module
+
+        radius_tol = max((design.get("button_radius") or 0.0) * 1.5, 1e-9)
+        minimums = [None] * len(heights)
+        for _x, y, z in mesh.verts:
+            nearest = min(range(len(heights)), key=lambda i: abs(heights[i] - z))
+            if abs(heights[nearest] - z) > radius_tol:
+                continue
+            clearance = modulate_module.interp_profile(surface_profile, z) - y
+            if minimums[nearest] is None or clearance < minimums[nearest]:
+                minimums[nearest] = clearance
+        if all(value is not None for value in minimums):
+            float_gap = (min(minimums), max(minimums))
+
     return {
         "measured_button_count": count,
         "measured_button_zs": zs,
+        "measured_button_float_gap": float_gap,
         "measured_button_gap_cv": spread,
         "measured_button_gap": mean_gap,
         "measured_button_diameter": diameter,
