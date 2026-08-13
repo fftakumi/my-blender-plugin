@@ -1124,9 +1124,12 @@ def build_bodice(part, table, scale):
         # 襟ぐりで詰めたあとの上側の半幅(spec の指定と違うことがある)
         "bust_axial_width_up": bust_axial_up,
         "bust_axial_width": bust_axial,
-        # ふくらみが始まる高さ。**稜線の検査はここより下だけを見る** —
-        # 襟ぐりまで見ると、胸から襟ぐりへ布が引けていく肩ヨークの傾きを
-        # 拾ってしまい、ふくらみを 0 にしても消えない床(ブラウスで 54.8 度)ができる
+        # ふくらみが始まる高さ。稜線の検査の走査範囲の上端に使う。
+        # **上側が襟ぐりで詰められている胴では、この値は襟ぐりの z と一致する**
+        # (`bust_axial_up = headroom` のとき代数的にそうなる)。効くのは
+        # `bust_axial_width` を襟ぐりまでの余裕より小さくした胴だけ。
+        # 稜線の床(ブラウスで 54.8 度)を消したのはこのキーではなく、
+        # **窓を頂点の近くに限ったこと**(validate.BUST_RIDGE_WINDOW)
         "bust_top_z": (shoulder_z - (bust_t - bust_axial_up) * span) * scale,
     }
     if not closed_front:

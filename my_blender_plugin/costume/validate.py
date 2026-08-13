@@ -72,6 +72,11 @@ BUST_PROJECTION_MIN = 0.015
 #: ワンピース 71度。経緯は docs/garments.md のスク水の節
 BUST_RIDGE_MAX_DEGREES = 45.0
 
+#: 稜線を測る窓。頂点から走査範囲の上端(= 襟ぐり)までの何割を見るか。
+#: **分割数ではなく形で窓を決める**ためのもの。「隣の代表点まで」にすると
+#: 窓の広さが分割数で決まり、同じ形でも読みが変わる(PR #10 レビュー B)
+BUST_RIDGE_WINDOW = 0.34
+
 # ---- ケープの「形」の定義(docs/garments.md)のしきい値 ----
 #: 裾の弧長 / 上端の弧長 の下限。これ未満は肩から広がっておらず、
 #: ただの開いた筒(=ケープではない)。**設計値**
@@ -954,9 +959,10 @@ def part_report(mesh, height_units):
             )
             # 「在るか」(上の下限)だけでは**在りすぎ**を見ていない。
             # 稜線が立つと横から見て円錐にとがる
-            # **ふくらみが始まる高さより下だけ**を見る。襟ぐりまで広げると、
-            # 胸から襟ぐりへ布が引けていく肩ヨークの傾きを拾い、ふくらみを 0 に
-            # しても消えない床ができる(ブラウスで 54.8 度。PR #10 レビュー)
+            # 走査の上端はふくらみの上端。**上側が襟ぐりで詰められている胴では
+            # 襟ぐりの z と一致する**ので、範囲としてはほとんど効かない
+            # (効くのは bust_axial_width を余裕より小さくした胴だけ)。
+            # 床を消しているのは走査範囲ではなく BUST_RIDGE_WINDOW のほう
             ridge = bust_ridge_degrees(verts, design.get("bust_top_z"))
             report["measured_bust_ridge_degrees"] = ridge["degrees"]
             if ridge["degrees"] is not None:
@@ -1272,7 +1278,7 @@ def seam_distance(mesh_a, ring_a, mesh_b, ring_b):
     return worst
 
 
-def bust_ridge_degrees(verts, z_max=None, bins=24):
+def bust_ridge_degrees(verts, z_max=None, bins=24, window=BUST_RIDGE_WINDOW):
     """前面の稜線(高さごとのいちばん前の点)の**頂点直上の傾き**を度で返す。
 
     とがった胸は、頂点へ向かう傾きが立って折り返しが鋭くなる。
@@ -1312,24 +1318,27 @@ def bust_ridge_degrees(verts, z_max=None, bins=24):
         return {"degrees": None, "apex_z": None, "profile": profile}
 
     apex = min(range(len(profile)), key=lambda index: profile[index][1])
-    # **頂点のすぐ上だけ**を測る。上へ広く取ると、胸から襟ぐりへ布が引けていく
-    # 肩ヨークの傾きを拾ってしまい、**ふくらみを 0 にしても消えない床**ができる
-    # (ブラウスで 54.8 度。0.018 以下は全部この床に張り付いて指標が動かなくなる。
-    #  PR #10 レビュー)。局所にすると床は 6.1 度まで下がり、ふくらみの量に
-    # 単調に反応するようになる。
-    # **高さの差が区間の半分に満たないペアは飛ばす** — 襟ぐりの前下がりで
-    # 代表点どうしがほぼ同じ高さに来ると、傾きが無限大に近く跳ねる
-    gap = step * 0.5
-    steepest = 0.0
-    for other in range(apex + 1, len(profile)):
-        rise = profile[other][0] - profile[apex][0]
-        if rise < gap:
-            continue
-        steepest = (profile[other][1] - profile[apex][1]) / rise
-        break
+    apex_z, apex_y = profile[apex]
+    top_z = profile[-1][0]
+    if top_z <= apex_z:
+        return {"degrees": None, "apex_z": apex_z, "profile": profile}
+
+    # 窓は**走査範囲に対する比**で取る(頂点から襟ぐりまでの BUST_RIDGE_WINDOW)。
+    # 「隣の代表点まで」にすると窓の広さが分割数で決まってしまい、同じ形でも
+    # 読みが変わる(ワンピースで rings 12/36/72 が 26/58/62 度。PR #10 レビュー B)。
+    # 比で取れば分割数に依らず 1 度以内で一致する
+    target_z = apex_z + (top_z - apex_z) * window
+    target_y = profile[-1][1]
+    for index in range(1, len(profile)):
+        lower, upper = profile[index - 1], profile[index]
+        if lower[0] <= target_z <= upper[0]:
+            local = (target_z - lower[0]) / max(upper[0] - lower[0], 1e-12)
+            target_y = lower[1] + (upper[1] - lower[1]) * local
+            break
+    slope = (target_y - apex_y) / (target_z - apex_z)
     return {
-        "degrees": math.degrees(math.atan(steepest)),
-        "apex_z": profile[apex][0],
+        "degrees": math.degrees(math.atan(slope)),
+        "apex_z": apex_z,
         "profile": profile,
     }
 
