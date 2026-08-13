@@ -3,7 +3,7 @@
 schema_version = "1.0.0"
 
 id = "my_blender_plugin"
-version = "0.13.0"
+version = "0.14.0"
 name = "My Blender Plugin"
 tagline = "Personal Blender add-on"
 maintainer = "fftakumi"

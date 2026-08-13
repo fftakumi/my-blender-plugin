@@ -88,6 +88,58 @@ def mark_sharp_folds(mesh, part_mesh):
     return marked
 
 
+def join_seam_group(objects, merge_distance):
+    """縫合パーツのオブジェクトを1つに統合し、継ぎ目の頂点を溶接する。
+
+    **統合しないと継ぎ目に線が出る。** 面は連続していても、別オブジェクトの頂点は
+    法線を共有しないので Blender が陰影を割る(布の切れ目に見える)。
+    頂点を溶接すれば法線が繋がって線が消える。
+
+    結合は `bpy.ops.object.join`(マテリアルスロットと UV の付け替えを正しくやる)、
+    溶接は bmesh(EDIT モードを要求しないので headless で poll が落ちない)。
+    """
+    import bmesh
+
+    root = objects[0]
+    if len(objects) > 1:
+        with bpy.context.temp_override(
+            active_object=root,
+            selected_objects=list(objects),
+            selected_editable_objects=list(objects),
+        ):
+            bpy.ops.object.join()
+
+    mesh = root.data
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=merge_distance)
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+    if hasattr(mesh, "shade_smooth"):
+        mesh.shade_smooth()
+    return root
+
+
+def apply_finish_modifiers(obj, part_mesh, thickness, levels):
+    """仕上げの標準モディファイアを積む。**積む中身は parts.finish_modifiers が決める**
+    (純粋関数なので bpy 無しでテストできる)。ここは bpy へ流し込むだけ。
+
+    非破壊なので素のメッシュは低ポリのまま残る。層1の検査も素の格子に対して行う。
+    """
+    stack = parts_module.finish_modifiers(part_mesh, thickness, levels)
+    for name, kind, properties in stack:
+        existing = obj.modifiers.get(name)
+        if existing is not None:
+            obj.modifiers.remove(existing)
+        modifier = obj.modifiers.new(name, kind)
+        for key, value in properties.items():
+            # バージョン差でプロパティ名が変わっても落とさない(仕上げは必須ではない)
+            if hasattr(modifier, key):
+                setattr(modifier, key, value)
+    return [modifier.name for modifier in obj.modifiers]
+
+
 def part_to_object(part_mesh, material=None, collection=None):
     """PartMesh 1枚から Blender オブジェクトを作る"""
     _remove_existing(part_mesh.name, collection)
@@ -126,11 +178,57 @@ def build_costume(normalized_spec, scene=None):
     material_map = materials_module.ensure_spec_materials(normalized_spec)
     collection = ensure_collection(collection_name(normalized_spec["name"]), scene)
 
+    # 厚みはシーンの単位に直す(spec は身長比で持つ)
+    thickness = (
+        normalized_spec["fabric_thickness"]
+        * normalized_spec["assumed_height"]
+        / normalized_spec["meters_per_unit"]
+    )
+    levels = normalized_spec["subdivision"]
+
     objects = [
         part_to_object(part_mesh, material_map.get(part_mesh.material), collection)
         for part_mesh in built["parts"]
     ]
+
+    if normalized_spec["join_seams"]:
+        # **統合してから仕上げる。** 先に Solidify を積むと、継ぎ目の両側に
+        # リム(境界を塞ぐ帯)ができてから溶接することになり、内側に板が残る。
+        # 統合 → 溶接 → 厚み の順なら、縫合した1枚の布として厚みが付く
+        by_name = {mesh.name: (mesh, obj) for mesh, obj in zip(built["parts"], objects)}
+        edges = [
+            length
+            for mesh in built["parts"]
+            for length in (min(_edge_lengths(mesh)),)
+        ]
+        merge_distance = min(edges) * 0.1 if edges else 1e-4
+        groups = parts_module.seam_groups(
+            [mesh.name for mesh in built["parts"]], normalized_spec["joints"]
+        )
+        objects = []
+        for group in groups:
+            root_mesh, _root_obj = by_name[group[0]]
+            root = join_seam_group([by_name[name][1] for name in group], merge_distance)
+            apply_finish_modifiers(root, root_mesh, thickness, levels)
+            objects.append(root)
+    else:
+        for part_mesh, obj in zip(built["parts"], objects):
+            apply_finish_modifiers(obj, part_mesh, thickness, levels)
     return {"built": built, "objects": objects, "collection": collection}
+
+
+def _edge_lengths(part_mesh):
+    """溶接のしきい値を決めるための辺長(いちばん短い辺より十分小さくする)"""
+    kinds = part_mesh.edge_kinds()
+    lengths = [
+        sum(
+            (part_mesh.verts[a][axis] - part_mesh.verts[b][axis]) ** 2 for axis in range(3)
+        )
+        ** 0.5
+        for pairs in kinds.values()
+        for a, b in pairs
+    ]
+    return lengths or [1e-4]
 
 
 def evaluated_part_mesh(obj, part_mesh_name=None):

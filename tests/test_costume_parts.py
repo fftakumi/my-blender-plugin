@@ -237,3 +237,176 @@ def test_a0_is_a_closed_ring_of_eight():
     # 8分割の多角形なので実周長はウエスト寸法より数%短い
     assert top["perimeter"] == pytest.approx(built["sizing"]["waist"], rel=0.06)
     assert top["perimeter"] < built["sizing"]["waist"]
+
+
+# ------------------------------------------------- 縫合パーツの統合(継ぎ目の線)
+#
+# 別オブジェクトのままだと Blender は頂点法線を繋がないので、面が連続していても
+# 継ぎ目に陰影の段が出る(「布の切れ目」に見える線)。統合の単位を決めるのは
+# 純粋関数なので、bpy 無しでここで検査する。実際の結合は build.py。
+
+
+def test_seam_groups_keeps_unjoined_parts_separate():
+    names = ["A", "B", "C"]
+    assert parts.seam_groups(names, []) == [["A"], ["B"], ["C"]]
+
+
+def test_seam_groups_merges_a_joint():
+    names = ["A", "B", "C"]
+    joints = [{"a": "A", "b": "C"}]
+    assert parts.seam_groups(names, joints) == [["A", "C"], ["B"]]
+
+
+def test_seam_groups_follows_a_chain():
+    names = ["A", "B", "C", "D"]
+    joints = [{"a": "A", "b": "B"}, {"a": "B", "b": "C"}]
+    assert parts.seam_groups(names, joints) == [["A", "B", "C"], ["D"]]
+
+
+def test_seam_groups_ignores_joints_naming_unknown_parts():
+    names = ["A", "B"]
+    joints = [{"a": "A", "b": "Ghost"}]
+    assert parts.seam_groups(names, joints) == [["A"], ["B"]]
+
+
+def test_seam_groups_keeps_the_spec_order():
+    """結合後の名前は先頭のパーツ名になるので、並びが spec 順である必要がある"""
+    names = ["Body", "Tag", "Brief"]
+    joints = [{"a": "Body", "b": "Brief"}]
+    assert parts.seam_groups(names, joints) == [["Body", "Brief"], ["Tag"]]
+
+
+def test_the_swimsuit_joins_the_bodice_and_the_brief():
+    normalized = spec_module.load_preset("swimsuit")
+    built = parts.build_all(normalized)
+    groups = parts.seam_groups(
+        [mesh.name for mesh in built["parts"]], normalized["joints"]
+    )
+    joined = next(group for group in groups if len(group) > 1)
+    assert joined == ["Swimsuit_Body", "Swimsuit_Brief"]
+
+
+def test_join_seams_is_off_by_default():
+    """既定を変えるとパーツ単位の編集ができなくなるので、明示的に選ばせる"""
+    for name in spec_module.list_presets():
+        assert spec_module.load_preset(name)["join_seams"] is False, name
+
+
+def test_the_bust_bulge_never_reaches_the_neckline():
+    """ふくらみが襟ぐりより上へ届くと**襟ぐりの縁が前へ押し出され**、
+    横から見て嘴のような角ができる。同梱プリセット全部で守られていること
+    (この検査を書いた時点では4プリセットとも 19〜29mm はみ出していた)"""
+    for name in spec_module.list_presets():
+        normalized = spec_module.load_preset(name)
+        for mesh in parts.build_all(normalized)["parts"]:
+            design = mesh.design or {}
+            if "bust_axial_width_up" not in design:
+                continue
+            part = next(p for p in normalized["parts"] if p["name"] == mesh.name)
+            shoulder_z = part["params"]["shoulder_z"] * normalized["assumed_height"]
+            span = shoulder_z - design["bottom_z"]
+            top_t = part["params"]["bust_t"] - design["bust_axial_width_up"]
+            neck_front_z = design["top_z"] - design["built_front_neck_drop"]
+            assert shoulder_z - top_t * span <= neck_front_z + 1e-9, (name, mesh.name)
+
+
+def test_the_bust_upper_width_is_only_clipped_never_widened():
+    """詰めるのは上側だけ。spec の指定より広げてはいけない"""
+    for name in spec_module.list_presets():
+        normalized = spec_module.load_preset(name)
+        for mesh in parts.build_all(normalized)["parts"]:
+            design = mesh.design or {}
+            if "bust_axial_width_up" not in design:
+                continue
+            assert design["bust_axial_width_up"] <= design["bust_axial_width"] + 1e-12
+            assert design["bust_axial_width_up"] >= parts.BUST_AXIAL_MIN - 1e-12
+
+
+# ------------------------------------------------- 仕上げモディファイア
+#
+# finish_modifiers を apply_finish_modifiers から分けた**唯一の理由が
+# テスト可能性**(bpy 非依存)。docstring が主張している不変条件を検査する。
+# 実際に積む join_seam_group / apply_finish_modifiers は bpy 依存なので
+# pytest では書けない(実機の headless 実行で確認している)。
+
+
+def fabric_mesh():
+    return parts.build_all(spec_module.load_preset("skirt_a0"))["parts"][0]
+
+
+def button_mesh():
+    built = parts.build_all(spec_module.load_preset("blouse"))
+    return next(mesh for mesh in built["parts"] if mesh.flat_shaded)
+
+
+def test_finish_modifiers_order_is_subsurf_then_solidify():
+    """逆にすると Solidify が作った細いリム面まで Subsurf が丸めて厚みが痩せる"""
+    stack = parts.finish_modifiers(fabric_mesh(), thickness=0.0013, levels=1)
+    assert [kind for _name, kind, _props in stack] == ["SUBSURF", "SOLIDIFY"]
+
+
+def test_finish_modifiers_skips_subsurf_at_level_zero():
+    stack = parts.finish_modifiers(fabric_mesh(), thickness=0.0013, levels=0)
+    assert [kind for _name, kind, _props in stack] == ["SOLIDIFY"]
+
+
+def test_finish_modifiers_skips_solidify_at_zero_thickness():
+    stack = parts.finish_modifiers(fabric_mesh(), thickness=0.0, levels=1)
+    assert [kind for _name, kind, _props in stack] == ["SUBSURF"]
+    assert parts.finish_modifiers(fabric_mesh(), thickness=0.0, levels=0) == []
+
+
+def test_finish_modifiers_leaves_hard_trim_alone():
+    """硬い部品(ボタン)は厚みも細分も掛けない。円盤の縁が丸まって塊に見える"""
+    assert parts.finish_modifiers(button_mesh(), thickness=0.0013, levels=2) == []
+
+
+def test_finish_modifiers_solidify_pushes_inward():
+    """外向きにすると胴が浮かせ量を追い越して、ゼッケンが布に沈む"""
+    stack = parts.finish_modifiers(fabric_mesh(), thickness=0.0013, levels=0)
+    _name, _kind, props = stack[0]
+    assert props["offset"] == -1.0
+    assert props["thickness"] == pytest.approx(0.0013)
+    # 均等オフセットは鋭い折れ目で棘を作り、複雑モードでないと股でシェルが交差する
+    assert props["use_even_offset"] is False
+    assert props["solidify_mode"] == "NON_MANIFOLD"
+
+
+def test_finish_modifiers_names_are_stable():
+    """build.py は同名のモディファイアを作り直すので、名前がぶれると二重に積む"""
+    stack = parts.finish_modifiers(fabric_mesh(), thickness=0.0013, levels=1)
+    assert [name for name, _kind, _props in stack] == [
+        parts.SUBSURF_MODIFIER,
+        parts.SOLIDIFY_MODIFIER,
+    ]
+
+
+def test_finish_modifiers_rejects_negative_values():
+    mesh = fabric_mesh()
+    with pytest.raises(parts.PartError):
+        parts.finish_modifiers(mesh, thickness=-0.001, levels=0)
+    with pytest.raises(parts.PartError):
+        parts.finish_modifiers(mesh, thickness=0.001, levels=-1)
+
+
+def test_vest_bodice_geometry_matches_the_golden_file():
+    """胴のゴールデン。armhole_round / bust_apex_degrees のような**既定の変更で
+    bodice 系4プリセットの形が全部動いた**のに、回帰の防御がゲートだけだった
+    (PR #10 レビュー)。ゲートは「範囲に入っているか」しか見ないので、
+    範囲内での作り変えは素通りする"""
+    with open(os.path.join(GOLDEN_DIR, "golden_vest_bodice.json"), encoding="utf-8") as handle:
+        golden = json.load(handle)
+
+    normalized = spec_module.load_preset("vest")
+    assert spec_module.spec_hash(normalized) == golden["spec_hash"]
+
+    mesh = next(
+        part for part in parts.build_all(normalized)["parts"] if part.name == golden["name"]
+    )
+    assert [list(quad) for quad in mesh.quads] == golden["quads"]
+    assert len(mesh.verts) == len(golden["verts"])
+    for produced, expected in zip(mesh.verts, golden["verts"]):
+        assert produced == pytest.approx(tuple(expected), abs=1e-9)
+    for produced, expected in zip(mesh.uv_loops, golden["uv_loops"]):
+        for (u, v), (eu, ev) in zip(produced, expected):
+            assert (u, v) == pytest.approx((eu, ev), abs=1e-9)

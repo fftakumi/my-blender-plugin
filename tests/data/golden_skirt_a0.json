@@ -1,6 +1,6 @@
 {
  "note": "tools/precheck.py --preset skirt_a0 と同じ出力。意図せず形が変わったら気づくため",
- "spec_hash": "92ac858dff49",
+ "spec_hash": "c7891f714463",
  "name": "Skirt_Body",
  "verts": [
   [

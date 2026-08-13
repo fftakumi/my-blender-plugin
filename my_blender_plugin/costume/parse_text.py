@@ -105,6 +105,7 @@ GARMENT_PRESETS = {
     "hood": "hooded_cape",
     "dress": "onepiece",
     "pants": "pants",
+    "swimsuit": "swimsuit",
 }
 
 #: 衣装の種類の見出し語。値は GARMENT_PRESETS のキー。
@@ -121,6 +122,11 @@ GARMENT_WORDS = {
     "ケープ": "cape", "cape": "cape", "マント": "cape", "ポンチョ": "cape",
     "ワンピース": "dress", "onepiece": "dress", "ドレス": "dress", "dress": "dress",
     "パンツ": "pants", "ズボン": "pants", "スラックス": "pants", "pants": "pants",
+    # 水着。「ワンピース水着」は「ワンピース」より長いので _find_words が先に拾い、
+    # 部分語の重複採用も落とされる(ドレスに化けない)
+    "スク水": "swimsuit", "スクール水着": "swimsuit", "スクミズ": "swimsuit",
+    "水着": "swimsuit", "ワンピース水着": "swimsuit", "競泳水着": "swimsuit",
+    "swimsuit": "swimsuit", "swimwear": "swimsuit", "swimming suit": "swimsuit",
 }
 
 #: 「24本プリーツ」「プリーツ32」などから山数を拾う

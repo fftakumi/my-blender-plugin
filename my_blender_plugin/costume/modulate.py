@@ -408,12 +408,36 @@ def neckline_drop(angle, front_drop, back_drop, front_angle):
     return front_drop * max(0.0, phase) + back_drop * max(0.0, -phase)
 
 
-def bust_projection(angle, t, amount, angular_width, bust_t, axial_width, front_angle):
-    """胸のふくらみ。前中心まわり・バスト位置まわりに局所的な出っぱりを作る(定義 #18)。
+def bust_projection(
+    angle,
+    t,
+    amount,
+    angular_width,
+    bust_t,
+    axial_width,
+    front_angle,
+    apex_angle=0.0,
+    axial_width_up=None,
+):
+    """胸のふくらみ。バスト位置に**左右2つ**の局所的な出っぱりを作る(定義 #18)。
 
     断面を楕円にしただけの胴は**メンズシャツ**にしか見えない。ブラウスとの違いは
     前面がバストの高さで前へ出ていること。角度方向と軸方向の両方で減衰する
     「こぶ」にするので、袖ぐり(角度 0 と π)にも裾にも影響しない。
+
+    `apex_angle` は前中心から左右の頂点までの角度。**0 にすると山が前中心で1つに
+    重なり、胸骨のところがいちばん前へ出た1枚のドームになる**(実物は逆にそこが窪む
+    ので不自然に見える)。0 より大きくすると2つの山に割れて谷ができる。
+
+    角度方向の総半幅は apex_angle の値によらず `angular_width` のまま
+    (各山の半幅を `angular_width - apex_angle` に取る)。袖ぐりに掛かる範囲が
+    apex を動かしても変わらないようにするため。
+
+    `axial_width_up` は**上側だけ別の半幅**にする指定(既定は下側と同じ)。
+    ふくらみが襟ぐりより上へ届くと**襟ぐりの縁そのものが前へ押し出され、
+    横から見ると嘴のような角ができる**。上側だけ襟ぐりで止めれば、下側の
+    落ち方(実物の胸は下へ長い)を保ったまま角が消える。頂点では上下とも
+    値 1・傾き 0 なので、幅が違っても折れ目にはならない。
 
     戻り値は**半径に足す量**(メートル)。角度・軸方向とも余弦の山で、
     範囲の外はきっかり 0 になる(裾までうねると別の破綻になる)。
@@ -424,14 +448,33 @@ def bust_projection(angle, t, amount, angular_width, bust_t, axial_width, front_
         raise ValueError(
             "幅は正の数にしてください: angular=%r, axial=%r" % (angular_width, axial_width)
         )
+    if not 0.0 <= apex_angle < angular_width:
+        raise ValueError(
+            "胸の頂点の角度は 0 以上・角度幅未満にしてください: apex=%r, angular=%r"
+            % (apex_angle, angular_width)
+        )
+    up_width = axial_width if axial_width_up is None else axial_width_up
+    if up_width <= 0.0:
+        raise ValueError("上側の幅は正の数にしてください: %r" % (axial_width_up,))
     delta = (angle - front_angle + math.pi) % (2.0 * math.pi) - math.pi
     if abs(delta) >= angular_width:
         return 0.0
-    axial = abs(t - bust_t)
-    if axial >= axial_width:
+    # t は上端が 0 なので、t < bust_t が「頂点より上」
+    signed = t - bust_t
+    reach = axial_width if signed >= 0.0 else up_width
+    axial = abs(signed)
+    if axial >= reach:
         return 0.0
-    lobe = 0.5 * (1.0 + math.cos(math.pi * delta / angular_width))
-    band = 0.5 * (1.0 + math.cos(math.pi * axial / axial_width))
+    half = angular_width - apex_angle
+    lobe = 0.0
+    for centre in (-apex_angle, apex_angle):
+        offset = abs(delta - centre)
+        if offset < half:
+            # 重ねずに max を取る。足すと前中心で山を超えて逆に盛り上がる
+            lobe = max(lobe, 0.5 * (1.0 + math.cos(math.pi * offset / half)))
+    if lobe <= 0.0:
+        return 0.0
+    band = 0.5 * (1.0 + math.cos(math.pi * axial / reach))
     return amount * lobe * band
 
 

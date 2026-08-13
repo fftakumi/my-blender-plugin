@@ -46,6 +46,10 @@ BUTTON_MIN_COUNT = 4
 BUTTON_GAP_CV_MAX = 0.15
 #: 前立ての幅 / 前開きの隙間の幅 の下限。同じ幅だと縁が合って筋が見えるので余裕を持たせる
 PLACKET_COVER_MARGIN = 1.5
+
+#: ゼッケンが胴の前面から出ていなければならない量 / 設計の浮かせ量。
+#: 楕円へ沿わせるので前中心では設計どおり出るが、丸め誤差の余裕を見て 1 未満にする
+PATCH_STANDOFF_MIN = 0.9
 #: ボタンの 厚み / 直径。実物のシャツ用貝ボタンは 2.3mm / 11.5mm = 0.20。
 #: ここを見ていなかったので、迫り出す円錐(0.26・裏面も穴も無し)が通っていた
 BUTTON_THICKNESS_RATIO = 0.20
@@ -61,6 +65,17 @@ CUFF_GATHER_MIN = 1.10
 #: 胸のふくらみが裾の前面より前へ出るべき最小量(m)。**設計値**。
 #: これを下回ると楕円断面だけの胴(= メンズシャツ)と区別できない
 BUST_PROJECTION_MIN = 0.015
+
+#: 前面の稜線の上りの傾き(度)の上限。超えると横から見て円錐のようにとがる。
+#: **warn**(公表寸法のある値ではなく形の質の指標。hard にすると既存の
+#: プリセットが落ちる)。同梱の実測: スク水 37度・ブラウス/ベスト 58度・
+#: ワンピース 71度。経緯は docs/garments.md のスク水の節
+BUST_RIDGE_MAX_DEGREES = 45.0
+
+#: 稜線を測る窓。頂点から走査範囲の上端(= 襟ぐり)までの何割を見るか。
+#: **分割数ではなく形で窓を決める**ためのもの。「隣の代表点まで」にすると
+#: 窓の広さが分割数で決まり、同じ形でも読みが変わる(PR #10 レビュー B)
+BUST_RIDGE_WINDOW = 0.34
 
 # ---- ケープの「形」の定義(docs/garments.md)のしきい値 ----
 #: 裾の弧長 / 上端の弧長 の下限。これ未満は肩から広がっておらず、
@@ -404,8 +419,12 @@ def cross_intersections(mesh_a, mesh_b, cell, eps, skip_a=(), skip_b=()):
 def armhole_loops(mesh):
     """袖ぐりの境界ループを左右に分けて返す。
 
-    胴は「前が開いた筒 + 袖ぐり2つ」なので境界ループは3本。そのうち**一番長い1本が
-    外周**(襟ぐり + 前開き + 裾がつながったもの)で、残りが袖ぐり。
+    袖ぐりは「襟ぐりでも裾でもない境界」。**上端リング(襟ぐり)・下端リング(裾)の
+    頂点を含む輪を落として**残りを袖ぐりとみなす。
+
+    「一番長い1本が外周」では**前が閉じた胴(かぶりもの)で誤る**。前開きの胴は
+    襟ぐり+前開き+裾が1本につながるので外周が最長だが、前を閉じると外周が
+    襟ぐりと裾の2本に割れ、裾より短い襟ぐりが袖ぐりに化ける。
     左右は重心の x 符号で決める(左が +X)。
 
     戻り値: {"l": {...}, "r": {...}}(見つかったものだけ)
@@ -414,20 +433,23 @@ def armhole_loops(mesh):
     loops = boundary_loops(topo["_boundary_edges"])
     if len(loops) < 2:
         return {}
-    measured = [ring_metrics(mesh.verts, loop) for loop in loops]
-    # 外周を除いた残りを袖ぐりとみなす
-    outer = max(range(len(measured)), key=lambda index: measured[index]["perimeter"])
+    edges = set(mesh.rings.get("top") or ()) | set(mesh.rings.get("bottom") or ())
+    candidates = [loop for loop in loops if not edges.intersection(loop)]
+    if not candidates:
+        # 上端・下端リングを持たないメッシュ向けの従来規則(一番長い1本が外周)
+        measured = [ring_metrics(mesh.verts, loop) for loop in loops]
+        outer = max(range(len(measured)), key=lambda index: measured[index]["perimeter"])
+        candidates = [loop for index, loop in enumerate(loops) if index != outer]
     result = {}
-    for index, metrics in enumerate(measured):
-        if index == outer:
-            continue
+    for loop in candidates:
+        metrics = ring_metrics(mesh.verts, loop)
         label = "l" if metrics["center"][0] >= 0.0 else "r"
         if label in result and result[label]["perimeter"] >= metrics["perimeter"]:
             continue
         result[label] = {
             key: value for key, value in metrics.items() if not key.startswith("_")
         }
-        result[label]["indices"] = list(loops[index])
+        result[label]["indices"] = list(loop)
     return result
 
 
@@ -935,6 +957,20 @@ def part_report(mesh, height_units):
                 report["measured_bust_z_fraction"],
                 ">= 0.5(丈の上半分)",
             )
+            # 「在るか」(上の下限)だけでは**在りすぎ**を見ていない。
+            # 稜線が立つと横から見て円錐にとがる
+            # 走査の上端はふくらみの上端。**上側が襟ぐりで詰められている胴では
+            # 襟ぐりの z と一致する**ので、範囲としてはほとんど効かない
+            # (効くのは bust_axial_width を余裕より小さくした胴だけ)。
+            # 床を消しているのは走査範囲ではなく BUST_RIDGE_WINDOW のほう
+            ridge = bust_ridge_degrees(verts, design.get("bust_top_z"))
+            report["measured_bust_ridge_degrees"] = ridge["degrees"]
+            if ridge["degrees"] is not None:
+                warn["bust_is_not_a_cone"] = _check(
+                    ridge["degrees"] <= BUST_RIDGE_MAX_DEGREES,
+                    ridge["degrees"],
+                    "<= %.0f 度" % BUST_RIDGE_MAX_DEGREES,
+                )
         if (
             design.get("shoulder_slope_degrees")
             and report["measured_shoulder_slope_degrees"] is not None
@@ -1005,6 +1041,49 @@ def part_report(mesh, height_units):
                 (report["measured_placket_width"], gap),
                 ">= 隙間 × %.1f" % PLACKET_COVER_MARGIN,
             )
+
+    # ---- 前スカート(旧スクの前垂れ) ----
+    if design.get("apron_top_arc"):
+        report.update(apron_metrics(mesh))
+        hard["apron_top_arc"] = _within(
+            report["measured_apron_top_arc"], design["apron_top_arc"], DIM_TOL
+        )
+        hard["apron_flare"] = _within(
+            report["measured_apron_flare"], design["apron_flare"], DIM_TOL
+        )
+        # 落ちたときに原因が読めるよう、**ずれの実測値**を載せる
+        hard["apron_centred"] = _check(
+            report["measured_apron_centred"],
+            report["measured_apron_centre_offset"],
+            "x のずれ 0",
+        )
+        # 前を向いていること。後ろに回っていたらそれはケープであって前垂れではない
+        hard["apron_faces_front"] = _check(
+            report["measured_apron_faces_front"],
+            report["measured_apron_centre_y"],
+            "布の重心 y < 0(前)",
+        )
+
+    # ---- ゼッケン(スク水の名札) ----
+    if design.get("patch_width"):
+        report.update(patch_metrics(mesh, design))
+        hard["patch_width"] = _within(
+            report["measured_patch_width"], design["patch_width"], 0.05
+        )
+        hard["patch_height"] = _within(
+            report["measured_patch_height"], design["patch_height"], 0.05
+        )
+        hard["patch_centred"] = _check(
+            report["measured_patch_centred"], report["measured_patch_width"], "前中心"
+        )
+        # 胴より前に出ていること。「浮かせた」と「埋めた」は交差ゲートでは
+        # 区別が付かない(埋まっていても面が交わらない位置がある)
+        floor = design["patch_host_front_y"] - design["patch_standoff"] * PATCH_STANDOFF_MIN
+        hard["patch_sits_on_the_front"] = _check(
+            report["measured_patch_front_y"] <= floor,
+            (report["measured_patch_front_y"], design["patch_host_front_y"]),
+            "<= %.5f(胴の前面より手前)" % floor,
+        )
 
     # ---- 定義 #14: ボタン ----
     if design.get("button_count"):
@@ -1199,6 +1278,71 @@ def seam_distance(mesh_a, ring_a, mesh_b, ring_b):
     return worst
 
 
+def bust_ridge_degrees(verts, z_max=None, bins=24, window=BUST_RIDGE_WINDOW):
+    """前面の稜線(高さごとのいちばん前の点)の**頂点直上の傾き**を度で返す。
+
+    とがった胸は、頂点へ向かう傾きが立って折り返しが鋭くなる。
+    「胸のふくらみが在るか」は `bust_projection` が下限で見ているが、
+    **在りすぎて円錐になっていないか**は誰も見ていなかった
+    (単一ドーム・襟ぐり突き抜け・量の二重計上を、どれもレンダーの目視でしか
+    見つけられなかった。経緯は docs/garments.md のスク水の節)。
+
+    高さで等間隔に区切って、各区間の最前点(最小 y)を稜線とする。
+    リングごとに集計しないのは、襟ぐりの前下がりで**同じ行でも頂点ごとに z が違う**ため。
+
+    `z_max` は**襟ぐりより上を外す**ための上限(前中心の襟ぐりの高さを渡す)。
+    外さないと肩紐や襟ぐりの縁を稜線と取り違える(スク水で実測 37 度が 55 度に化けた)。
+
+    戻り値: {"degrees": 頂点直上の傾き(度), "apex_z": 頂点の高さ, "profile": [(z, y)]}
+    """
+    front = [
+        (point[2], point[1])
+        for point in verts
+        if point[1] < 0.0 and (z_max is None or point[2] <= z_max)
+    ]
+    if len(front) < 2 or bins < 2:
+        return {"degrees": None, "apex_z": None, "profile": []}
+    zs = [z for z, _y in front]
+    low, high = min(zs), max(zs)
+    if high - low <= 0.0:
+        return {"degrees": None, "apex_z": None, "profile": []}
+
+    step = (high - low) / bins
+    buckets = {}
+    for z, y in front:
+        index = min(bins - 1, int((z - low) / step))
+        if index not in buckets or y < buckets[index][1]:
+            buckets[index] = (z, y)
+    profile = [buckets[index] for index in sorted(buckets)]  # 下から上へ
+    if len(profile) < 3:
+        return {"degrees": None, "apex_z": None, "profile": profile}
+
+    apex = min(range(len(profile)), key=lambda index: profile[index][1])
+    apex_z, apex_y = profile[apex]
+    top_z = profile[-1][0]
+    if top_z <= apex_z:
+        return {"degrees": None, "apex_z": apex_z, "profile": profile}
+
+    # 窓は**走査範囲に対する比**で取る(頂点から襟ぐりまでの BUST_RIDGE_WINDOW)。
+    # 「隣の代表点まで」にすると窓の広さが分割数で決まってしまい、同じ形でも
+    # 読みが変わる(ワンピースで rings 12/36/72 が 26/58/62 度。PR #10 レビュー B)。
+    # 比で取れば分割数に依らず 1 度以内で一致する
+    target_z = apex_z + (top_z - apex_z) * window
+    target_y = profile[-1][1]
+    for index in range(1, len(profile)):
+        lower, upper = profile[index - 1], profile[index]
+        if lower[0] <= target_z <= upper[0]:
+            local = (target_z - lower[0]) / max(upper[0] - lower[0], 1e-12)
+            target_y = lower[1] + (upper[1] - lower[1]) * local
+            break
+    slope = (target_y - apex_y) / (target_z - apex_z)
+    return {
+        "degrees": math.degrees(math.atan(slope)),
+        "apex_z": apex_z,
+        "profile": profile,
+    }
+
+
 def bodice_metrics(mesh, design):
     """ブラウスの胴について、定義 #1〜#5 と #7〜#9 を測る。
 
@@ -1383,6 +1527,49 @@ def placket_metrics(mesh, design):
         "measured_placket_width": (max(xs) - min(xs)) if xs else None,
         "measured_placket_length": (max(zs) - min(zs)) if zs else None,
         "measured_placket_centred": (abs(max(xs) + min(xs)) < 1e-6) if xs else None,
+    }
+
+
+def apron_metrics(mesh):
+    """前スカートを測る。上端の弧長・広がり・**前を向いていること**"""
+    top = mesh.rings.get("top") or []
+    bottom = mesh.rings.get("bottom") or []
+    result = {
+        "measured_apron_top_arc": open_arc_length(mesh.verts, top) if top else None,
+        "measured_apron_flare": None,
+        "measured_apron_centred": None,
+        "measured_apron_centre_offset": None,
+        "measured_apron_faces_front": None,
+        "measured_apron_centre_y": None,
+    }
+    if top and bottom:
+        top_arc = open_arc_length(mesh.verts, top)
+        if top_arc > 0:
+            result["measured_apron_flare"] = open_arc_length(mesh.verts, bottom) / top_arc
+    xs = [point[0] for point in mesh.verts]
+    if xs:
+        offset = max(xs) + min(xs)  # 左右対称なら 0
+        result["measured_apron_centre_offset"] = offset
+        result["measured_apron_centred"] = abs(offset) < 1e-6
+    # 布の重心が前(-Y)にあること。ケープ(後ろに布)との取り違えを捕まえる
+    if mesh.verts:
+        centre_y = sum(point[1] for point in mesh.verts) / len(mesh.verts)
+        result["measured_apron_centre_y"] = centre_y
+        result["measured_apron_faces_front"] = centre_y < 0.0
+    return result
+
+
+def patch_metrics(mesh, design):
+    """ゼッケンを測る。幅・丈・前中心にあること・胴より前に出ていること"""
+    xs = [point[0] for point in mesh.verts]
+    ys = [point[1] for point in mesh.verts]
+    zs = [point[2] for point in mesh.verts]
+    return {
+        "measured_patch_width": (max(xs) - min(xs)) if xs else None,
+        "measured_patch_height": (max(zs) - min(zs)) if zs else None,
+        "measured_patch_centred": (abs(max(xs) + min(xs)) < 1e-6) if xs else None,
+        # 前は -Y。いちばん前に出ている点
+        "measured_patch_front_y": min(ys) if ys else None,
     }
 
 

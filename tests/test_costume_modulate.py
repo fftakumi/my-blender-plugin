@@ -294,3 +294,100 @@ def test_pleat_fold_segments_none_without_pleats():
     assert modulate.pleat_fold_segments(48, 0, 0.0, 0.5) == []
     assert modulate.pleat_fold_segments(48, 24, 0.0, 0.5) == []
     assert modulate.pleat_fold_segments(24, 24, 0.22, 0.5) == []
+
+
+# ------------------------------------------------- 胸のふくらみ(左右2つの山)
+#
+# apex=0 だと山が前中心で1つに重なり、胸骨のところがいちばん前へ出た
+# 1枚のドームになる。実物はそこが窪むので不自然に見える。
+
+
+FRONT = -math.pi / 2
+
+
+def bust(delta_degrees, apex_degrees, amount=1.0, angular_degrees=62.0):
+    """前中心から delta 度の位置でのふくらみ(バストの高さ t=bust_t で測る)"""
+    return modulate.bust_projection(
+        FRONT + math.radians(delta_degrees),
+        0.3,
+        amount,
+        math.radians(angular_degrees),
+        0.3,
+        0.26,
+        FRONT,
+        math.radians(apex_degrees),
+    )
+
+
+def test_bust_apex_zero_keeps_the_single_lobe():
+    """既定の 0 は従来と同じ形(前中心が最大)。回帰ガード"""
+    assert bust(0.0, 0.0) == pytest.approx(1.0)
+    for delta in (10.0, 30.0, 50.0):
+        assert bust(delta, 0.0) < bust(delta - 10.0, 0.0)
+
+
+def test_bust_apex_puts_the_peak_off_centre():
+    apex = 22.0
+    assert bust(apex, apex) == pytest.approx(1.0)
+    assert bust(0.0, apex) < bust(apex, apex)
+    assert bust(-apex, apex) == pytest.approx(bust(apex, apex))
+
+
+def test_bust_apex_makes_a_valley_at_the_sternum():
+    """前中心が谷になっていること(これが無いと1枚のドームに見える)"""
+    apex = 22.0
+    assert bust(0.0, apex) < 0.6
+    # 谷から山へ単調に増える
+    assert bust(0.0, apex) < bust(11.0, apex) < bust(apex, apex)
+
+
+def test_bust_apex_does_not_widen_the_angular_reach():
+    """総半幅は apex によらず angular_width のまま(袖ぐりに掛かる範囲を変えない)"""
+    for apex in (0.0, 22.0, 40.0):
+        assert bust(62.0, apex) == 0.0
+        assert bust(61.0, apex) > 0.0
+
+
+def test_bust_apex_must_stay_inside_the_angular_width():
+    with pytest.raises(ValueError):
+        bust(0.0, 62.0)
+    with pytest.raises(ValueError):
+        bust(0.0, -1.0)
+
+
+def test_bust_upper_width_can_be_clipped_independently():
+    """上側だけ狭めても頂点は値1・傾き0のまま(折れ目にならない)"""
+    kwargs = dict(
+        amount=1.0,
+        angular_width=math.radians(62.0),
+        bust_t=0.4,
+        axial_width=0.26,
+        front_angle=FRONT,
+        apex_angle=math.radians(22.0),
+        axial_width_up=0.10,
+    )
+    at = lambda t: modulate.bust_projection(FRONT + kwargs["apex_angle"], t, **kwargs)
+    assert at(0.4) == pytest.approx(1.0)          # 頂点は変わらない
+    assert at(0.30) == pytest.approx(0.0, abs=1e-12)  # 上は 0.10 で終わる
+    assert at(0.29) == 0.0
+    assert at(0.50) > 0.0                          # 下は 0.26 のまま生きている
+    assert at(0.65) > 0.0                          # 下端は 0.4 + 0.26 = 0.66
+    assert at(0.66) == 0.0
+    # 上側のほうが急に落ちる(同じ距離での値が小さい)
+    assert at(0.4 - 0.08) < at(0.4 + 0.08)
+
+
+def test_bust_upper_width_defaults_to_the_lower_one():
+    common = (1.0, math.radians(62.0), 0.4, 0.26, FRONT, math.radians(22.0))
+    angle = FRONT + math.radians(22.0)
+    for t in (0.30, 0.35, 0.45, 0.55):
+        assert modulate.bust_projection(angle, t, *common) == pytest.approx(
+            modulate.bust_projection(angle, t, *common, axial_width_up=0.26)
+        )
+
+
+def test_bust_rejects_a_non_positive_upper_width():
+    with pytest.raises(ValueError):
+        modulate.bust_projection(
+            FRONT, 0.4, 1.0, math.radians(62.0), 0.4, 0.26, FRONT, 0.0, 0.0
+        )

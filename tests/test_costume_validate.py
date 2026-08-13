@@ -2,7 +2,13 @@ import math
 
 import pytest
 
-from my_blender_plugin.costume import kernels, modulate, validate
+from my_blender_plugin.costume import (
+    kernels,
+    modulate,
+    parts,
+    spec as spec_module,
+    validate,
+)
 
 
 def tube(segments=12, rings=3, radius=1.0, height=2.0):
@@ -377,3 +383,124 @@ def test_part_report_warns_on_uneven_ring_edges():
     mesh.design["bottom_perimeter"] *= 4.0
     report = validate.part_report(mesh, height_units=1.53)
     assert "edge_length_cv_ring" in report["warned"]
+
+# ------------------------------------------------- 胸の稜線(とがりすぎの検出)
+#
+# 「ふくらみが在るか」は bust_projection の下限が見ていたが、**在りすぎて
+# 円錐にとがっていないか**は誰も見ていなかった。単一ドーム・襟ぐり突き抜け・
+# バスト周の二重計上の3つとも、レンダーの目視でしか見つけられなかった。
+
+
+def ridge_wedge(height, depth, steps=40):
+    """高さ height の三角形の前面。上りの傾きは depth/(height/2) と分かっている"""
+    return [
+        (0.0, -depth * (1.0 - abs(2.0 * index / steps - 1.0)), index / steps * height)
+        for index in range(steps + 1)
+    ]
+
+
+def test_bust_ridge_matches_a_known_slope():
+    """理論値と一致すること(区間で代表点を取るので、ここがずれると意味が無い)"""
+    for depth, expected in ((0.10, 45.0), (0.06, 31.0), (0.02, 11.3)):
+        measured = validate.bust_ridge_degrees(ridge_wedge(0.20, depth))["degrees"]
+        assert measured == pytest.approx(expected, abs=0.5), depth
+
+
+def test_bust_ridge_grows_with_the_bulge():
+    angles = [validate.bust_ridge_degrees(ridge_wedge(0.20, d))["degrees"]
+              for d in (0.02, 0.06, 0.10)]
+    assert angles[0] < angles[1] < angles[2]
+
+
+def test_bust_ridge_drops_everything_above_z_max():
+    """z_max より上の点は稜線の候補から外れる。外さないと、胸より前へ出た
+    別の場所(肩紐・襟ぐりの縁)が頂点に化ける"""
+    chest = ridge_wedge(0.20, 0.04)  # 頂点 z=0.10、y=-0.04
+    intruder = (0.0, -0.30, 0.26)    # ずっと前に出た点を上に置く
+    verts = chest + [intruder]
+
+    assert validate.bust_ridge_degrees(verts)["apex_z"] == pytest.approx(0.26)
+    clipped = validate.bust_ridge_degrees(verts, z_max=0.21)
+    assert clipped["apex_z"] == pytest.approx(0.10, abs=0.01)
+    assert clipped["degrees"] == pytest.approx(21.8, abs=0.5)
+
+
+def test_bust_ridge_is_local_to_the_apex():
+    """**頂点の直上だけ**を測る。上へ広く取ると、胸から襟ぐりへ布が引けていく
+    肩ヨークの傾きを拾い、ふくらみを 0 にしても消えない床ができる
+    (ブラウスで 54.8 度。PR #10 レビュー)"""
+    # 頂点直上はなだらか、そこから離れた上のほうだけ急、という形
+    verts = []
+    for index in range(41):
+        z = index / 40.0 * 0.40
+        if z <= 0.10:
+            y = -0.06 * z / 0.10
+        elif z <= 0.30:
+            y = -0.06 + 0.01 * (z - 0.10) / 0.20   # なだらか(約2.9度)
+        else:
+            y = -0.05 + 0.05 * (z - 0.30) / 0.10   # 急(45度)= ヨークの見立て
+        verts.append((0.0, y, z))
+    measured = validate.bust_ridge_degrees(verts)["degrees"]
+    assert measured < 10.0, measured  # 遠くの急な区間を拾っていない
+
+
+def test_bust_ridge_handles_degenerate_input():
+    assert validate.bust_ridge_degrees([])["degrees"] is None
+    assert validate.bust_ridge_degrees([(0.0, -1.0, 0.0)])["degrees"] is None
+    # 前(y<0)の点が無い
+    assert validate.bust_ridge_degrees([(0.0, 1.0, 0.0), (0.0, 2.0, 1.0)])["degrees"] is None
+
+
+def cone_gate(preset, **overrides):
+    spec = spec_module.load_preset(preset)
+    bodice = next(p for p in spec["parts"] if p["type"] == "bodice")
+    bodice["params"].update(overrides)
+    normalized = spec_module.normalize_spec(spec)
+    report = validate.costume_report(parts.build_all(normalized), normalized)
+    entry = next(e for e in report["parts"] if "measured_bust_ridge_degrees" in e)
+    return entry["measured_bust_ridge_degrees"], entry["warn"]["bust_is_not_a_cone"]["ok"]
+
+
+def test_the_cone_gate_is_reachable_for_every_shipped_bodice():
+    """**届かない warn を出しっぱなしにしない**(PR #10 レビュー)。
+    通っていないプリセットは、ふくらみを減らせば通ること = 直せる警告であること
+    を確かめる。ワンピースは丈の短い胴で既定量が立つので現状 warn(0.010 で通る)"""
+    for name in spec_module.list_presets():
+        spec = spec_module.load_preset(name)
+        if not any(p["type"] == "bodice" for p in spec["parts"]):
+            continue
+        _degrees, ok = cone_gate(name)
+        if ok:
+            continue
+        _relaxed, relaxed_ok = cone_gate(name, bust_projection=0.010)
+        assert relaxed_ok, name
+
+
+def test_the_cone_gate_reading_does_not_depend_on_the_ring_count():
+    """同じ形なら分割数を変えても同じ読みになること。窓を「隣の代表点まで」に
+    すると窓の広さが分割数で決まり、ワンピースで 26/58/62 度と暴れた
+    (PR #10 レビュー B)"""
+    for name in ("blouse", "onepiece", "swimsuit"):
+        spec = spec_module.load_preset(name)
+        base = next(p for p in spec["parts"] if p["type"] == "bodice")["params"]
+        coarse, _ = cone_gate(name, rings=base.get("rings", 12))
+        fine, _ = cone_gate(name, rings=base.get("rings", 12) * 3)
+        assert abs(coarse - fine) < 6.0, (name, coarse, fine)
+
+
+def test_the_cone_gate_responds_to_the_bulge_not_the_yoke():
+    """ふくらみを 0 にしたら指標も落ちること。落ちないなら胸ではなく
+    別の場所(肩ヨーク)を測っている(初版がそれで、床が 54.8 度だった)"""
+    angles = {}
+    for projection in (0.0, 0.022, 0.080):
+        spec = spec_module.load_preset("blouse")
+        bodice = next(p for p in spec["parts"] if p["type"] == "bodice")
+        bodice["params"]["bust_projection"] = projection
+        normalized = spec_module.normalize_spec(spec)
+        report = validate.costume_report(parts.build_all(normalized), normalized)
+        entry = next(e for e in report["parts"] if "measured_bust_ridge_degrees" in e)
+        angles[projection] = entry["measured_bust_ridge_degrees"]
+
+    assert angles[0.0] < 15.0, angles          # ふくらみが無ければ床は低い
+    assert angles[0.0] < angles[0.022] < angles[0.080]
+    assert angles[0.080] > validate.BUST_RIDGE_MAX_DEGREES  # 盛りすぎは捕まる
