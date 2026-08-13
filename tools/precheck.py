@@ -78,8 +78,13 @@ def summarize(report):
         if not check["ok"]:
             lines.append("  FAIL %s: 実測 %r / 期待 %r" % (key, check["value"], check["expected"]))
     for joint in report["joints"]:
+        # 折れ角は測るだけ(共通しきい値は引けない — 襟は 63〜77° 折れるのが正しい)。
+        # 数字を常に出すことで、稜線に見える折れをレンダー前に気づけるようにする
+        fold = ""
+        if joint.get("fold_degrees") is not None:
+            fold = "  折れ %.1f°" % joint["fold_degrees"]
         lines.append(
-            "  接合 %s.%s - %s.%s: ずれ %.3g (%s)"
+            "  接合 %s.%s - %s.%s: ずれ %.3g (%s)%s"
             % (
                 joint["a"],
                 joint["a_ring"],
@@ -87,6 +92,7 @@ def summarize(report):
                 joint["b_ring"],
                 joint["gap"],
                 "OK" if joint["ok"] else "NG",
+                fold,
             )
         )
     return "\n".join(lines)

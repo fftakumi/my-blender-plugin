@@ -360,6 +360,39 @@ def leg_radius_profile(t, thigh_radius, knee_radius, hem_radius):
     return knee_radius + (hem_radius - knee_radius) * local
 
 
+def leg_line_shape(angle, front_angle):
+    """脚ぐりが脇へ向かって持ち上がる量(0〜1)。
+
+    前中心・後ろ中心で 0(そこがマチ)、両脇で 1。ビキニ型のショーツを
+    寸胴のショーツから分けているのはこの関数の形そのもの(定義は
+    docs/garments.md のビキニショーツの節)。
+
+    素の |sin| だとマチの真下から一定の傾きで上がり続ける「斜めに切った」形に
+    なる。smoothstep を掛けると前後中心のまわりが平らになって**マチの幅**が生まれ、
+    脇では上がりきって水平になり**脇の帯**になる。実物の脚ぐりはこの
+    「平ら → 立ち上がり → 平ら」でできている。
+
+    **sin² は試して却下した。** 脇の頂点は smoothstep より狭くなる(脇の 15° 手前で
+    93%、smoothstep 版は 30° 手前でまだ 95%)が、その代わり中間の角度で脚ぐりが
+    軒並み下がり(45° で 0.50 対 0.62)、正面から見た脚ぐりの切れ込みがほとんど
+    消えて丸いポーチになった。頂点の狭さより切れ込みの深さのほうが見た目に効く。
+    """
+    return smoothstep(abs(math.sin(angle - front_angle)))
+
+
+def seat_shape(angle, front_angle):
+    """尻の張り出しの周方向の分布(0〜1)。後ろ中心で 1、前半分は 0。
+
+    人体の腰の断面は楕円ではなく、**後ろだけが出た卵形**。楕円のままだと
+    後ろ姿が寸胴に見える(パンツとスカートに共通の既知の差だが、丈が短くて
+    腰しか無いショーツでは尻がそのまま輪郭になるので特に効く)。
+
+    2乗しているのは脇(0 になる位置)で傾きも 0 にするため。1乗だと脇に
+    折れ目が出る。前半分を切り落としているのは、腹は出ていないから。
+    """
+    return max(0.0, -math.cos(angle - front_angle)) ** 2
+
+
 def sleeve_radius_profile(t, bicep_radius, cuff_radius, elbow, cuff_start, gather=1.0):
     """袖の半径。**肘まで二の腕の太さを保ち、袖口で絞られ、最後は一定(カフス)**。
 

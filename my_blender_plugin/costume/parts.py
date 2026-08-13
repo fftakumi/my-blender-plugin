@@ -144,16 +144,28 @@ def build_waistband(part, table, scale):
 
     バンドの**下端**がウエストライン。こうするとスカート本体の上端リングと
     座標がそのまま一致し、接合(リング共有)が計算で保証される。
+
+    腰穿きの衣装では下端がウエストではないので、`waist_drop`(ウエストからの落差)
+    を渡してその高さの胴回りで作る。**pants 側と同じ式**なので、接合の一致は
+    waist_drop が 0 でなくても計算で保証される。
     """
     params = part["params"]
     height = table["height"]
     band_height = params["height"] * height
     waist_z = params["waist_z"] * height
     flare = params["flare"]
+    bottom_perimeter = modulate.follow_measure(
+        1.0,
+        params["waist_drop"] * height,
+        table["waist"],
+        table["hip"],
+        table["hip_drop"],
+        1.0,
+    )
 
     profile = modulate.band_profile(
         rings=params["rings"],
-        bottom_perimeter=table["waist"],
+        bottom_perimeter=bottom_perimeter,
         flare=flare,
         depth_ratio=table["depth_ratio"],
     )
@@ -163,9 +175,9 @@ def build_waistband(part, table, scale):
     # バンドは折り目もドレープも入れない(縫い付けられていて動かない)
     mesh = _tube(part["name"], profile, z_per_ring, angles, [], scale, part["material"])
     mesh.design = {
-        "top_perimeter": table["waist"] / flare * scale,
-        "bottom_perimeter": table["waist"] * scale,
-        "bottom_fit_perimeter": table["waist"] * scale,
+        "top_perimeter": bottom_perimeter / flare * scale,
+        "bottom_perimeter": bottom_perimeter * scale,
+        "bottom_fit_perimeter": bottom_perimeter * scale,
         "bottom_perimeter_note": None,
         "top_z": (waist_z + band_height) * scale,
         "bottom_z": waist_z * scale,
@@ -408,6 +420,16 @@ def build_hood(part, table, scale, host=None):
 #: **層1では捕まらない**(面は交差していない)ので生成側で弾く
 LEG_BLEND_MIN_ROWS = 1.5
 
+#: 脚ぐりを持ち上げた(leg_line > 0)ときの「ブリッジの辺 / 外周の辺」の許容範囲。
+#: 分岐リングの辺の長さがここから外れると脚の縁が胴を突き抜ける。
+#: **実測**。上限は層1(preset の他を固定して segments 20-44 × crotch_segments 1-24 を
+#: 総当たり): 自己交差 0 は比 2.29 まで、2.46 以上で落ちる。
+#: 下限は**層2(厚みを付けたシェル)**が決める — 層1は比 0.49 まで通るのに、
+#: 厚み 1.3mm を付けると 0.72(segments 44)/ 0.65(segments 32)で股が折れて交差する。
+#: 通ったのは 0.78 以上。安全側に 0.80 とした(LEG_BLEND_MIN_ROWS と同じ性質の下限)。
+#: 水平に切った脚口(leg_line = 0)では縁が真下を向くので出ない → そちらには掛けない
+LEG_LINE_BRIDGE_RATIO = (0.80, 2.20)
+
 
 def build_pants(part, table, scale):
     """パンツ。腰からは1本の筒、股からは2本の脚(定義は docs/garments.md)。
@@ -424,37 +446,107 @@ def build_pants(part, table, scale):
         raise PartError("pants の segments は4の倍数にしてください: %d" % (segments,))
 
     waist_z_m = params["waist_z"] * height
-    rise_m = table["rise"] * params["rise_scale"]
+    # 上端が自然なウエストからどれだけ下がっているか。腰穿きの衣装はここが 0 でない。
+    # プロファイルを**体の高さで**読むために要る値で、0 なら従来どおり
+    # 「上端 = ウエスト」として読む
+    waist_drop_m = params["waist_drop"] * height
+    # 股の位置は体で決まっているので、上端を下げたぶん股上は短くなる
+    rise_m = (table["rise"] - waist_drop_m) * params["rise_scale"]
+    if rise_m <= 0.0:
+        raise PartError(
+            "waist_drop(%.3f)がサイズ表の股上(%.3f /H)以上なので、"
+            "上端が股より下に来ます" % (params["waist_drop"], table["rise"] / height)
+        )
     inseam = table["inseam"] * params["inseam_scale"] * scale
     thigh = table["thigh"] * (1.0 + params["thigh_ease"]) * scale
     knee = table["knee"] * params["knee_scale"] * scale
     hem = table["hem_opening"] * params["hem_scale"] * scale
 
-    # 胴(腰→股): スカートと同じ「ウエスト→ヒップに沿う」プロファイル。広がりは無し
-    profile = modulate.skirt_profile(
-        rings=params["hip_rings"],
-        length=rise_m,
-        waist_perimeter=table["waist"],
-        hip_perimeter=table["hip"],
-        hip_drop=table["hip_drop"],
-        hip_hug=1.0,
-        flare=1.0,
-        flare_curve=1.0,
-        depth_ratio=table["depth_ratio"],
-    )
+    # 胴(腰→股): スカートと同じ「ウエスト→ヒップに沿う」プロファイル。広がりは無し。
+    #
+    # ただしリング単位ではなく**頂点単位**で読む。脚ぐりを脇へ持ち上げる(leg_line)と
+    # 下端が水平な輪ではなくなるので、同じリングの中でも頂点ごとに「上端からどれだけ
+    # 下がったか」が変わるため。u_bottom[j] がその頂点の下端(1.0 = 股まで届く)で、
+    # 行 t の頂点は u = t × u_bottom[j] の位置になる。leg_line=0 なら u = t で、
+    # skirt_profile(flare=1)をリング単位に読んだ従来と**同じ座標**になる
+    # (flare_multiplier(t,1,1) は常に 1.0 なので掛け算が入らない)
+    depth_ratio = table["depth_ratio"]
     angles = modulate.circle_angles(segments)
-    torso_rings = [
-        kernels.ring_from_polar(
-            [semi * scale] * segments,
-            angles,
-            (waist_z_m - t * rise_m) * scale,
-            depth_ratio=depth,
-        )
-        for semi, depth, t in zip(profile["semi_major"], profile["depth_ratio"], profile["t"])
+    leg_line = params["leg_line"]
+    u_bottom = [
+        1.0 - leg_line * modulate.leg_line_shape(angle, FRONT_ANGLE) for angle in angles
     ]
+
+    def body_perimeter(u):
+        """上端から u(股上に対する比)だけ下がった高さの、体の胴回り。
+
+        **ウエストからの落差で読む**(上端からではない)。上端から読むと
+        `follow_measure` の smoothstep が上端で傾き 0 から始まるので、
+        腰骨に乗る衣装では「そこだけ体に沿っていない垂直な筒」になり、
+        ウエストバンドとの境目に稜線が出る(脇で 17° の折れ目として見つけた)。
+        """
+        return modulate.follow_measure(
+            1.0,
+            waist_drop_m + u * rise_m,
+            table["waist"],
+            table["hip"],
+            table["hip_drop"],
+            1.0,
+        )
+
+    def body_semi(u):
+        return modulate.ellipse_semi_major(body_perimeter(u), depth_ratio) * scale
+
+    # 尻の張り出し。周方向の分布は seat_shape、高さ方向は「ウエストで 0 → ヒップで
+    # 満額 → 以降は保つ」。**周長と同じ follow_measure を 0→1 で使い回している**ので、
+    # 尻が最大になる高さと胴が一番太くなる高さが定義から一致する
+    seat = params["seat"]
+    seat_angles = [modulate.seat_shape(angle, FRONT_ANGLE) for angle in angles]
+
+    def seat_profile(u):
+        """尻の張り出しの高さ方向の分布。**上端で 0**、ヒップまでの距離で満額。
+
+        胴回りと違ってウエストからの落差では読まない — 上端で 0 でないと、
+        尻の無いウエストバンドとの接合(リング共有)が開く。腰穿きだと
+        股でも満額に届かないので、検証の設計値は下の seat_at_crotch で合わせる
+        """
+        return modulate.follow_measure(u, rise_m, 0.0, 1.0, table["hip_drop"], 1.0)
+
+    def seat_offset(u, index, semi):
+        if seat <= 0.0:
+            return 0.0
+        return semi * depth_ratio * seat * seat_angles[index] * seat_profile(u)
+
+    def body_point(u, index):
+        """角度 index・深さ u の体の表面。脚ぐりの縁を体に沿わせるのに使う"""
+        semi = body_semi(u)
+        return (
+            semi * math.cos(angles[index]),
+            semi * depth_ratio * math.sin(angles[index]) + seat_offset(u, index, semi),
+        )
+
+    torso_rings = []
+    for t in modulate.axis_fractions(params["hip_rings"]):
+        us = [t * bottom for bottom in u_bottom]
+        semis = [body_semi(u) for u in us]
+        ring = kernels.ring_from_polar(
+            semis,
+            angles,
+            [(waist_z_m - u * rise_m) * scale for u in us],
+            depth_ratio=depth_ratio,
+        )
+        torso_rings.append(
+            [
+                (x, y + seat_offset(u, index, semi), z)
+                for index, ((x, y, z), u, semi) in enumerate(zip(ring, us, semis))
+            ]
+        )
     torso = kernels.loft_rings(torso_rings, name=part["name"], closed=True, tubular=True)
 
-    # 股リングを前後中心で割る。segments%4==0 なので前中心・後ろ中心に頂点が必ずある
+    # 股リングを前後中心で割る。segments%4==0 なので前中心・後ろ中心に頂点が必ずある。
+    # leg_line を入れると下端リングは水平でなくなるが、前中心・後ろ中心は
+    # leg_line_shape が 0 になる位置なので**そこだけは股の高さのまま**で、
+    # ブリッジ(マチ)は leg_line に関係なく水平に渡る
     crotch = torso_rings[-1]
     crotch_z = (waist_z_m - rise_m) * scale
     front = _side_segment(angles, FRONT_ANGLE)
@@ -471,11 +563,37 @@ def build_pants(part, table, scale):
         for step in range(1, crotch_segments)
     ]
 
-    def torso_arc(start, stop):
+    # 脚ぐりを持ち上げると、分岐リングの**辺の長さがブリッジと外周で揃っていない**
+    # ことが自己交差になって出る。脚のロフトは「頂点を番号順に円周へ等間隔に送る」
+    # ので、片側だけ細かいと送り先が実際の位置から大きくずれ、縁が胴の壁を突き抜ける。
+    # 水平に切った脚口(ズボン)では縁が真下を向くので、ずれても抜けない
+    if leg_line > 0.0:
+        outer = [
+            crotch[(front + step) % segments] for step in range(segments // 2 + 1)
+        ]
+        outer_edge = sum(
+            _distance3(outer[index], outer[index + 1]) for index in range(len(outer) - 1)
+        ) / (len(outer) - 1)
+        bridge_edge = _distance3(crotch[front], crotch[back]) / crotch_segments
+        ratio = bridge_edge / outer_edge
+        low, high = LEG_LINE_BRIDGE_RATIO
+        if not low <= ratio <= high:
+            wanted = _distance3(crotch[front], crotch[back]) / outer_edge
+            raise PartError(
+                "マチの分割が周方向と釣り合っていません"
+                "(ブリッジの辺 / 外周の辺 = %.2f、許容 %.2f〜%.2f)。"
+                "crotch_segments を %d〜%d にしてください"
+                % (ratio, low, high, math.ceil(wanted / high), int(wanted / low))
+            )
+
+    def torso_arc_indices(start, stop):
         indices = [start]
         while indices[-1] != stop:
             indices.append((indices[-1] + 1) % segments)
-        return [crotch[index] for index in indices]
+        return indices
+
+    def torso_arc(start, stop):
+        return [crotch[index] for index in torso_arc_indices(start, stop)]
 
     # 分岐リング(どちらも +z から見て反時計回り = ロフトで法線が外向き)。
     # 左脚(x>0): 前中心→(+x側)→後ろ中心 + ブリッジを後ろ→前へ。
@@ -483,6 +601,10 @@ def build_pants(part, table, scale):
     # ブリッジの辺を両脚が逆向きに辿るので、溶接後の巻き方向が揃う
     left_ring = torso_arc(front, back) + list(reversed(bridge))
     right_ring = torso_arc(back, front) + list(bridge)
+    # 分岐リングの頂点が胴のどの列(角度)から来たか。None はブリッジの点。
+    # 脚ぐりの縁を体に沿って下ろすのに使う
+    left_cols = torso_arc_indices(front, back) + [None] * len(bridge)
+    right_cols = torso_arc_indices(back, front) + [None] * len(bridge)
 
     leg_rings_count = params["leg_rings"]
     blend = params["blend"]
@@ -496,7 +618,18 @@ def build_pants(part, table, scale):
             % (leg_rings_count, blend, leg_rings_count * blend, LEG_BLEND_MIN_ROWS)
         )
 
-    def leg_loft(ring0):
+    def leg_loft(ring0, anchor, cols):
+        """anchor = 位相の基準にする頂点の番号(= 前中心)。
+
+        円周へ送る先は「番号順に等間隔」なので、**どの頂点を基準にするかで
+        左右の脚の位相が変わる**。左は分岐リングの先頭が前中心、右は先頭が
+        後ろ中心なので、素直に先頭を基準にすると左右が鏡像にならない。
+        脚が円のうちは位相がずれても面は同じ形なので見えなかったが、
+        脚ぐりが曲線になると**そのまま左右非対称の形になって出る**。
+        前中心は両方のリングにある幾何的な目印なので、そこを基準にすれば
+        左右の位相が定義から鏡像になる(前中心は x=0 上にあり、
+        左右の重心から見た角度がちょうど補角になる)。
+        """
         count = len(ring0)
         cx = sum(point[0] for point in ring0) / count
         cy = sum(point[1] for point in ring0) / count
@@ -514,35 +647,64 @@ def build_pants(part, table, scale):
                     angle -= 2.0 * math.pi
             unwrapped.append(angle)
             previous = angle
-        start_angle = unwrapped[0]
+        start_angle = unwrapped[anchor] - 2.0 * math.pi * anchor / count
         thigh_r = thigh / (2.0 * math.pi)
         knee_r = knee / (2.0 * math.pi)
         hem_r = hem / (2.0 * math.pi)
         # 脚の内側の壁が x=0 を跨ぐと反対の脚と貫通する(自己交差ゲートで落ちた)。
         # 円の中心を「半径 + 隙間」だけ体側へ逃がして、内壁を前後中心面の手前に保つ
         inner_gap = 0.05 * thigh_r
+        # 円へ寄せる量を頂点ごとに持つ。**マチでは全部寄せ、脇では寄せない**。
+        # 脚ぐりを持ち上げると脇の縁は体の細い高さに来るのに、円は太ももの太さの
+        # ままなので、全周を寄せると脇だけ円が胴の輪郭より外へ出て角が飛び出す。
+        # マチ側は円へ寄る動きが股を塞ぐ布そのものなので、そこは寄せ続ける
+        # (leg_line = 0 では全頂点が 1.0 = 従来どおり)
+        span = leg_line * rise_m * scale
+        pull = [
+            1.0 - min(1.0, max(0.0, (z0 - crotch_z) / span)) if span > 0.0 else 1.0
+            for _x, _y, z0 in ring0
+        ]
+        # 円へ寄せない頂点(脇)の行き先。**真下ではなく体に沿って下ろす。**
+        # 真下に下ろすと、体が広がり続けている高さで急に垂直になって
+        # 脚ぐりの縁に折れ目が出る(脇で 18°)。体に沿わせれば胴の続きになる
+        # その頂点の深さ u(0 = 上端, 1 = 股)と、縁 1 行ぶんで下がる量
+        u_at = [1.0 - (z0 - crotch_z) / (rise_m * scale) for _x, _y, z0 in ring0]
+        du = inseam / (rise_m * scale)
         rings_points = [list(ring0)]
         for index in range(1, leg_rings_count + 1):
             t = index / leg_rings_count
             grow = modulate.smoothstep(min(1.0, t / blend))
             target_radius = modulate.leg_radius_profile(t, thigh_r, knee_r, hem_r)
             centre_x = side_sign * max(abs(cx), target_radius + inner_gap)
-            z = crotch_z - inseam * t
             points = []
-            for j, (x0, y0, _z0) in enumerate(ring0):
+            for j, (x0, y0, z0) in enumerate(ring0):
                 even = start_angle + 2.0 * math.pi * j / count
                 tx = centre_x + target_radius * math.cos(even)
                 ty = cy + target_radius * math.sin(even)
+                weight = grow * pull[j]
+                bx, by = x0, y0
+                # 体に沿わせる量は**円へ寄せる量のちょうど裏返し**にする。
+                # grow の残りにすると、円へ全部寄せるべきマチでもブレンドの
+                # 途中行で体に引っ張られ、厚みを付けたとき股で折れて交差した
+                follow = 1.0 - pull[j]
+                if follow > 0.0 and cols[j] is not None:
+                    # 体に沿って du×t ぶん下がった位置(u は 1.0 = 股で止める)
+                    fx, fy = body_point(min(1.0, u_at[j] + du * t), cols[j])
+                    bx, by = x0 + (fx - x0) * follow, y0 + (fy - y0) * follow
+                # z は**頂点ごとに**分岐リングから真下へ下ろす。全頂点を同じ z に
+                # 置くと leg_line で持ち上げた脚ぐりが1行で水平に潰れる
                 points.append(
-                    (x0 + (tx - x0) * grow, y0 + (ty - y0) * grow, z)
+                    (bx + (tx - bx) * weight, by + (ty - by) * weight, z0 - inseam * t)
                 )
             rings_points.append(points)
         return kernels.loft_rings(
             rings_points, name=part["name"], closed=True, tubular=False
         )
 
-    left = leg_loft(left_ring)
-    right = leg_loft(right_ring)
+    # 前中心の位置: 左のリングは前中心から始まり、右のリングは後ろ中心から始まって
+    # 外周を辿り切ったところが前中心(外周の点数 = segments//2 + 1)
+    left = leg_loft(left_ring, 0, left_cols)
+    right = leg_loft(right_ring, segments // 2, right_cols)
     mesh, maps = kernels.weld_meshes([torso, left, right], name=part["name"])
     mesh.material = part["material"]
     torso_map, left_map, right_map = maps
@@ -586,14 +748,15 @@ def build_pants(part, table, scale):
             ]
 
     mesh.design = {
-        "top_perimeter": table["waist"] * scale,
+        # 上端は「その高さの体の胴回り」。waist_drop = 0 ならウエスト周そのもの
+        "top_perimeter": body_perimeter(0.0) * scale,
         "bottom_perimeter": None,
         "bottom_fit_perimeter": None,
         "bottom_perimeter_note": "裾は2本あるので pants_hem_l / pants_hem_r で見る",
         "top_z": waist_z_m * scale,
         "bottom_z": crotch_z - inseam,
         "length": None,  # 腰〜裾は rise+inseam に分けて検証する
-        "depth_ratio_top": profile["depth_ratio"][0],
+        "depth_ratio_top": depth_ratio,
         "depth_ratio_bottom": None,
         "radial_modulations": None,  # 溶接後の形なので周期成分の検査は掛けられない
         "pleats": 0,
@@ -604,6 +767,13 @@ def build_pants(part, table, scale):
         "pants_rise": rise_m * scale,
         "pants_inseam": inseam,
         "pants_hem": hem,
+        # 脚ぐりの脇とマチの高さの差。0 なら「水平に切った脚口」の検査になる
+        # (キーを消すのではなく 0 を入れる — 消すとズボン側の網に穴が開く)
+        "pants_leg_line": leg_line * rise_m * scale,
+        # 股リングの「後ろの厚み / 前の厚み」。1.0 なら前後対称の楕円(ズボン)。
+        # 股での張り出しは seat_profile のぶん満額に届かないことがあるので、
+        # 設計値も同じ関数で出す(そうしないとゲートが甘くなる)
+        "pants_seat_ratio": 1.0 + seat * seat_profile(1.0),
     }
     if thigh_target is not None:
         mesh.design["pants_thigh"] = thigh_target
