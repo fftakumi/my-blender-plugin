@@ -2,7 +2,13 @@ import math
 
 import pytest
 
-from my_blender_plugin.costume import kernels, modulate, validate
+from my_blender_plugin.costume import (
+    kernels,
+    modulate,
+    parts,
+    spec as spec_module,
+    validate,
+)
 
 
 def tube(segments=12, rings=3, radius=1.0, height=2.0):
@@ -377,3 +383,73 @@ def test_part_report_warns_on_uneven_ring_edges():
     mesh.design["bottom_perimeter"] *= 4.0
     report = validate.part_report(mesh, height_units=1.53)
     assert "edge_length_cv_ring" in report["warned"]
+
+# ------------------------------------------------- 胸の稜線(とがりすぎの検出)
+#
+# 「ふくらみが在るか」は bust_projection の下限が見ていたが、**在りすぎて
+# 円錐にとがっていないか**は誰も見ていなかった。単一ドーム・襟ぐり突き抜け・
+# バスト周の二重計上の3つとも、レンダーの目視でしか見つけられなかった。
+
+
+def ridge_wedge(height, depth, steps=40):
+    """高さ height の三角形の前面。上りの傾きは depth/(height/2) と分かっている"""
+    return [
+        (0.0, -depth * (1.0 - abs(2.0 * index / steps - 1.0)), index / steps * height)
+        for index in range(steps + 1)
+    ]
+
+
+def test_bust_ridge_matches_a_known_slope():
+    """理論値と一致すること(区間で代表点を取るので、ここがずれると意味が無い)"""
+    for depth, expected in ((0.10, 45.0), (0.06, 31.0), (0.02, 11.3)):
+        measured = validate.bust_ridge_degrees(ridge_wedge(0.20, depth))["degrees"]
+        assert measured == pytest.approx(expected, abs=0.5), depth
+
+
+def test_bust_ridge_grows_with_the_bulge():
+    angles = [validate.bust_ridge_degrees(ridge_wedge(0.20, d))["degrees"]
+              for d in (0.02, 0.06, 0.10)]
+    assert angles[0] < angles[1] < angles[2]
+
+
+def test_bust_ridge_ignores_everything_above_the_neckline():
+    """襟ぐりより上(肩紐・襟ぐりの縁)を混ぜると稜線を取り違える
+    (実際スク水で 37 度が 55 度に化けた)。
+
+    実態は「襟ぐりでも布はまだ前に出ていて、その上の肩紐が急に後退する」形。
+    その段差を胸の稜線と読むと、なだらかな胸でも急に見える"""
+    chest = []
+    for index in range(21):
+        z = index / 20.0 * 0.20
+        # 頂点 z=0.10 で y=-0.06、襟ぐり z=0.20 では -0.02 までしか戻らない
+        y = -0.06 * (z / 0.10) if z <= 0.10 else -0.06 + 0.04 * (z - 0.10) / 0.10
+        chest.append((0.0, y, z))
+    straps = [(0.0, -0.002, 0.205), (0.0, -0.001, 0.21)]
+    verts = chest + straps
+
+    gentle = validate.bust_ridge_degrees(verts, z_max=0.20)["degrees"]
+    contaminated = validate.bust_ridge_degrees(verts)["degrees"]
+    assert gentle == pytest.approx(21.8, abs=1.0)  # 0.04/0.10 = 21.8度
+    assert contaminated > 60.0  # 段差を稜線と読むと急に化ける
+
+
+def test_bust_ridge_handles_degenerate_input():
+    assert validate.bust_ridge_degrees([])["degrees"] is None
+    assert validate.bust_ridge_degrees([(0.0, -1.0, 0.0)])["degrees"] is None
+    # 前(y<0)の点が無い
+    assert validate.bust_ridge_degrees([(0.0, 1.0, 0.0), (0.0, 2.0, 1.0)])["degrees"] is None
+
+
+def test_the_swimsuit_bust_is_not_a_cone_but_the_default_still_warns():
+    """回帰ガード: スク水(0.012)は通り、既定 0.022 のままの3つは警告が出る。
+    この差が「バスト周の二重計上」の実測(docs のスク水の節)"""
+    verdicts = {}
+    for name in ("blouse", "vest", "onepiece", "swimsuit"):
+        normalized = spec_module.load_preset(name)
+        report = validate.costume_report(parts.build_all(normalized), normalized)
+        entry = next(e for e in report["parts"] if "measured_bust_ridge_degrees" in e)
+        verdicts[name] = entry["warn"]["bust_is_not_a_cone"]["ok"]
+    assert verdicts["swimsuit"] is True
+    assert verdicts["blouse"] is False
+    assert verdicts["vest"] is False
+    assert verdicts["onepiece"] is False

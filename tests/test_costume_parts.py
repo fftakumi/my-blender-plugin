@@ -237,3 +237,86 @@ def test_a0_is_a_closed_ring_of_eight():
     # 8分割の多角形なので実周長はウエスト寸法より数%短い
     assert top["perimeter"] == pytest.approx(built["sizing"]["waist"], rel=0.06)
     assert top["perimeter"] < built["sizing"]["waist"]
+
+
+# ------------------------------------------------- 縫合パーツの統合(継ぎ目の線)
+#
+# 別オブジェクトのままだと Blender は頂点法線を繋がないので、面が連続していても
+# 継ぎ目に陰影の段が出る(「布の切れ目」に見える線)。統合の単位を決めるのは
+# 純粋関数なので、bpy 無しでここで検査する。実際の結合は build.py。
+
+
+def test_seam_groups_keeps_unjoined_parts_separate():
+    names = ["A", "B", "C"]
+    assert parts.seam_groups(names, []) == [["A"], ["B"], ["C"]]
+
+
+def test_seam_groups_merges_a_joint():
+    names = ["A", "B", "C"]
+    joints = [{"a": "A", "b": "C"}]
+    assert parts.seam_groups(names, joints) == [["A", "C"], ["B"]]
+
+
+def test_seam_groups_follows_a_chain():
+    names = ["A", "B", "C", "D"]
+    joints = [{"a": "A", "b": "B"}, {"a": "B", "b": "C"}]
+    assert parts.seam_groups(names, joints) == [["A", "B", "C"], ["D"]]
+
+
+def test_seam_groups_ignores_joints_naming_unknown_parts():
+    names = ["A", "B"]
+    joints = [{"a": "A", "b": "Ghost"}]
+    assert parts.seam_groups(names, joints) == [["A"], ["B"]]
+
+
+def test_seam_groups_keeps_the_spec_order():
+    """結合後の名前は先頭のパーツ名になるので、並びが spec 順である必要がある"""
+    names = ["Body", "Tag", "Brief"]
+    joints = [{"a": "Body", "b": "Brief"}]
+    assert parts.seam_groups(names, joints) == [["Body", "Brief"], ["Tag"]]
+
+
+def test_the_swimsuit_joins_the_bodice_and_the_brief():
+    normalized = spec_module.load_preset("swimsuit")
+    built = parts.build_all(normalized)
+    groups = parts.seam_groups(
+        [mesh.name for mesh in built["parts"]], normalized["joints"]
+    )
+    joined = next(group for group in groups if len(group) > 1)
+    assert joined == ["Swimsuit_Body", "Swimsuit_Brief"]
+
+
+def test_join_seams_is_off_by_default():
+    """既定を変えるとパーツ単位の編集ができなくなるので、明示的に選ばせる"""
+    for name in spec_module.list_presets():
+        assert spec_module.load_preset(name)["join_seams"] is False, name
+
+
+def test_the_bust_bulge_never_reaches_the_neckline():
+    """ふくらみが襟ぐりより上へ届くと**襟ぐりの縁が前へ押し出され**、
+    横から見て嘴のような角ができる。同梱プリセット全部で守られていること
+    (この検査を書いた時点では4プリセットとも 19〜29mm はみ出していた)"""
+    for name in spec_module.list_presets():
+        normalized = spec_module.load_preset(name)
+        for mesh in parts.build_all(normalized)["parts"]:
+            design = mesh.design or {}
+            if "bust_axial_width_up" not in design:
+                continue
+            part = next(p for p in normalized["parts"] if p["name"] == mesh.name)
+            shoulder_z = part["params"]["shoulder_z"] * normalized["assumed_height"]
+            span = shoulder_z - design["bottom_z"]
+            top_t = part["params"]["bust_t"] - design["bust_axial_width_up"]
+            neck_front_z = design["top_z"] - design["built_front_neck_drop"]
+            assert shoulder_z - top_t * span <= neck_front_z + 1e-9, (name, mesh.name)
+
+
+def test_the_bust_upper_width_is_only_clipped_never_widened():
+    """詰めるのは上側だけ。spec の指定より広げてはいけない"""
+    for name in spec_module.list_presets():
+        normalized = spec_module.load_preset(name)
+        for mesh in parts.build_all(normalized)["parts"]:
+            design = mesh.design or {}
+            if "bust_axial_width_up" not in design:
+                continue
+            assert design["bust_axial_width_up"] <= design["bust_axial_width"] + 1e-12
+            assert design["bust_axial_width_up"] >= parts.BUST_AXIAL_MIN - 1e-12

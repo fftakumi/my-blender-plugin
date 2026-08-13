@@ -28,13 +28,19 @@ from my_blender_plugin.costume import (  # noqa: E402
     validate,
 )
 
-#: レンダーの向き。(名前, カメラ方向の単位ベクトル, 寄せ具合)
+#: レンダーの向き。(名前, カメラ方向の単位ベクトル, 寄せ具合, 狙う高さ /bbox)
+#: 狙う高さは 0 = 下端、1 = 上端。**寄りの絵で bbox の中心を狙ってはいけない** —
+#: 丈のある衣装だと "hem" と名付けた絵に胸が写り、裾が一度も写らない
+#: (スク水の脚口がこれで6枚のどれにも写らず、ブラインド識別で
+#:  「タンクトップ」と読まれ続けた)
 VIEWS = (
-    ("front", (0.0, -1.0, 0.15), 1.0),
-    ("side", (1.0, 0.0, 0.15), 1.0),
-    ("back", (0.0, 1.0, 0.15), 1.0),
-    ("oblique", (-0.8, -0.8, 0.55), 1.0),
-    ("hem", (0.0, -1.0, -0.45), 0.45),
+    ("front", (0.0, -1.0, 0.15), 1.0, 0.5),
+    ("side", (1.0, 0.0, 0.15), 1.0, 0.5),
+    ("back", (0.0, 1.0, 0.15), 1.0, 0.5),
+    ("oblique", (-0.8, -0.8, 0.55), 1.0, 0.5),
+    # 仰角は浅く。真下から覗くと内側の裏面ばかり写って(それは backface.png の仕事)
+    # 裾の**輪郭**が読めない。スク水では脚口が「ブラのカップ2つ」に読まれた
+    ("hem", (0.0, -1.0, -0.30), 0.45, 0.12),
 )
 RENDER_SIZE = 720
 EEVEE_SAMPLES = 24
@@ -234,24 +240,29 @@ def setup_render(objects):
     return camera, center, size, engine
 
 
-def aim(camera, center, size, direction, zoom):
-    """カメラを center に向けて距離を bbox から決める"""
+def aim(camera, center, size, direction, zoom, target=None):
+    """カメラを target(既定は center)に向けて距離を bbox から決める"""
+    target = center if target is None else target
     offset = Vector(direction)
     offset.normalize()
-    camera.location = center + offset * (size * 2.2 * zoom)
-    # -Z 軸を center に向ける
-    camera.rotation_euler = (center - camera.location).to_track_quat("-Z", "Y").to_euler()
+    camera.location = target + offset * (size * 2.2 * zoom)
+    # -Z 軸を target に向ける
+    camera.rotation_euler = (target - camera.location).to_track_quat("-Z", "Y").to_euler()
 
 
 def render_views(objects, out_dir):
     """規定の5方向 + 裏面カリング1枚をレンダーする"""
     os.makedirs(out_dir, exist_ok=True)
     camera, center, size, engine = setup_render(objects)
+    _c, _s, lows, highs = _bounds(objects)
     scene = bpy.context.scene
     written = []
 
-    for name, direction, zoom in VIEWS:
-        aim(camera, center, size, direction, zoom)
+    def target_at(fraction):
+        return Vector((center.x, center.y, lows[2] + (highs[2] - lows[2]) * fraction))
+
+    for name, direction, zoom, aim_z in VIEWS:
+        aim(camera, center, size, direction, zoom, target_at(aim_z))
         scene.render.filepath = os.path.join(out_dir, "%s.png" % name)
         bpy.ops.render.render(write_still=True)
         written.append(scene.render.filepath + ".png" if not scene.render.filepath.endswith(".png") else scene.render.filepath)
@@ -308,7 +319,21 @@ def main():
 
     layer2 = {}
     hard = {}
-    for part_mesh in built["parts"]:
+    # join_seams のときは縫合パーツが1オブジェクトに統合されているので、
+    # 「1パーツ = 1オブジェクト」を前提にした検査(存在・頂点の一致・折り目の本数)は
+    # 成り立たない。統合の代表パーツだけを見て、**その代わり評価後メッシュと
+    # UV/マテリアルは統合後の実物に対して検査する**(黙って緩めない)
+    joined = bool(normalized.get("join_seams"))
+    targets = built["parts"]
+    if joined:
+        groups = parts.seam_groups(
+            [mesh.name for mesh in built["parts"]], normalized["joints"]
+        )
+        roots = {group[0] for group in groups}
+        targets = [mesh for mesh in built["parts"] if mesh.name in roots]
+        report["joined_groups"] = groups
+
+    for part_mesh in targets:
         obj = by_name.get(part_mesh.name)
         if obj is None:
             hard["object_exists.%s" % part_mesh.name] = {
@@ -321,11 +346,12 @@ def main():
         entry = {
             "uv": uv_report(obj),
             "material": material_report(obj),
-            "spec_match": compare_to_spec(part_mesh, verts, faces),
+            # 統合後は頂点が溶接されて数も並びも変わるので、spec との一致は問えない
+            "spec_match": None if joined else compare_to_spec(part_mesh, verts, faces),
             "evaluated": validate.raw_mesh_report(
                 obj.name, *(lambda g: (g["verts"], g["faces"]))(build.evaluated_part_mesh(obj))
             ),
-            "creases": crease_report(obj, part_mesh),
+            "creases": None if joined else crease_report(obj, part_mesh),
             "modifiers": [(modifier.name, modifier.type) for modifier in obj.modifiers],
         }
         layer2[part_mesh.name] = entry
@@ -347,18 +373,22 @@ def main():
         hard["%s.double_sided" % prefix] = _ok(
             not material["backface_culled_materials"], material["backface_culled_materials"], []
         )
-        hard["%s.blend_matches_spec" % prefix] = _ok(
-            entry["spec_match"]["ok"], entry["spec_match"], True
-        )
+        if entry["spec_match"] is not None:
+            hard["%s.blend_matches_spec" % prefix] = _ok(
+                entry["spec_match"]["ok"], entry["spec_match"], True
+            )
+        # 評価後メッシュ(厚み込み)の検査は統合してもそのまま効く。
+        # むしろ統合の溶接に失敗すれば、ここで非多様体・重複頂点として落ちる
         hard["%s.evaluated_mesh" % prefix] = _ok(
             entry["evaluated"]["failed"] == [], entry["evaluated"]["failed"], []
         )
-        creases = entry["creases"]
-        hard["%s.pleat_creases_sharp" % prefix] = _ok(
-            creases["sharp_edges"] == creases["expected"],
-            creases["sharp_edges"],
-            creases["expected"],
-        )
+        if entry["creases"] is not None:
+            creases = entry["creases"]
+            hard["%s.pleat_creases_sharp" % prefix] = _ok(
+                creases["sharp_edges"] == creases["expected"],
+                creases["sharp_edges"],
+                creases["expected"],
+            )
 
     report["layer2"] = layer2
     report["hard_layer2"] = hard

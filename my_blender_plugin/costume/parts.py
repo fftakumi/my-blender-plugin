@@ -403,6 +403,12 @@ def build_hood(part, table, scale, host=None):
     return mesh
 
 
+#: 脚の分岐→円の移行に要るリング行数(leg_rings × blend の下限)。
+#: これを割ると移行が1行で終わり、折り返しに近い折れ目ができる。
+#: **層1では捕まらない**(面は交差していない)ので生成側で弾く
+LEG_BLEND_MIN_ROWS = 1.5
+
+
 def build_pants(part, table, scale):
     """パンツ。腰からは1本の筒、股からは2本の脚(定義は docs/garments.md)。
 
@@ -480,6 +486,15 @@ def build_pants(part, table, scale):
 
     leg_rings_count = params["leg_rings"]
     blend = params["blend"]
+    # 分岐リング→円の移行が**1行で終わると折り返しに近い折れ目**になる。
+    # 層1は通る(面同士は交差していない)が、厚みを付けた瞬間にシェルが交差する。
+    # 実測: rings×blend が 1.2 では落ち、1.5 で通った(股下の長さには依存しない)
+    if leg_rings_count * blend < LEG_BLEND_MIN_ROWS:
+        raise PartError(
+            "脚の分岐から円への移行が急すぎます(leg_rings %d × blend %.2f = %.2f < %.1f)。"
+            "leg_rings を増やすか blend を上げてください"
+            % (leg_rings_count, blend, leg_rings_count * blend, LEG_BLEND_MIN_ROWS)
+        )
 
     def leg_loft(ring0):
         count = len(ring0)
@@ -606,6 +621,10 @@ def build_pants(part, table, scale):
 #: 前中心の角度(-Y 方向を正面とする)
 FRONT_ANGLE = -math.pi / 2
 
+#: 胸のふくらみの上側の半幅の下限(t)。襟ぐりで止めても、これより狭くすると
+#: 幅の無い稜線になって別の不自然さが出る
+BUST_AXIAL_MIN = 0.06
+
 
 def _front_open_angles(segments, gap_angle=None):
     """前中心に開き口が来るように角度を並べる。
@@ -625,6 +644,111 @@ def _front_open_angles(segments, gap_angle=None):
     return [FRONT_ANGLE + gap_angle * 0.5 + step * index for index in range(segments)]
 
 
+def _front_arc_angles(segments, span_angle):
+    """前中心を中心に span_angle ぶんだけ並べた角度(前面だけを覆うシート用)。
+
+    `_front_open_angles` の裏返し。あちらは前中心に**隙間**を空けて後ろに布を回すが、
+    こちらは前中心に**布**を置いて左右へ回り込ませる(前垂れ・エプロン)。
+    """
+    if not 0.0 < span_angle < 2.0 * math.pi:
+        raise PartError("前面シートの角度幅が範囲外です: %r" % (span_angle,))
+    step = span_angle / (segments - 1)
+    return [FRONT_ANGLE - span_angle * 0.5 + step * index for index in range(segments)]
+
+
+def build_apron(part, table, scale):
+    """前スカート(旧スクの前垂れ)。腰から前面だけを覆って垂れる一枚布。
+
+    **これがスク水をレオタードから分ける。** 紺の一体型 + 胸の名札まで作っても、
+    ブラインド識別では「ボディスーツ/レオタード」と読まれた(docs のスク水の節)。
+    旧スクの見た目の署名は前面のフラップなので、パーツとして足す。
+
+    形は skirt_body と同じ「体に沿う→裾で広がる」プロファイルを、前中心を中心とした
+    弧の範囲でだけ張ったもの。下に着ている水着の面と重ならないよう standoff で外へ逃がす。
+    """
+    params = part["params"]
+    height = table["height"]
+    waist_z = params["waist_z"] * height
+    length = params["length"] * height
+    # **奇数にする。** 偶数だと前中心を2頂点が跨いで、いちばん前に出る点が中心から
+    # ずれる(ゼッケンの columns と同じ理由)。前垂れは前中心が要の布なので揃える
+    segments = max(3, params["segments"]) | 1
+    span_angle = math.radians(params["span_degrees"])
+    depth_ratio = table["depth_ratio"]
+    standoff = params["standoff"] * height
+
+    # 下の水着と同じ「ウエスト→ヒップに沿う」プロファイル。同じ関数・同じ寸法で
+    # 出すので、standoff を足したぶんだけ確実に外側に来る(貫通しない)
+    profile = modulate.skirt_profile(
+        rings=params["rings"],
+        length=length,
+        waist_perimeter=table["waist"],
+        hip_perimeter=table["hip"],
+        hip_drop=table["hip_drop"],
+        hip_hug=1.0,
+        flare=params["flare"],
+        flare_curve=params["flare_curve"],
+        depth_ratio=depth_ratio,
+    )
+    angles = _front_arc_angles(segments, span_angle)
+    ring_points = [
+        kernels.ring_from_polar(
+            [(semi + standoff) * scale] * segments,
+            angles,
+            (waist_z - t * length) * scale,
+            depth_ratio=depth,
+        )
+        for semi, depth, t in zip(
+            profile["semi_major"], profile["depth_ratio"], profile["t"]
+        )
+    ]
+
+    mesh = kernels.loft_rings(ring_points, name=part["name"], closed=False, tubular=True)
+    mesh.material = part["material"]
+    # 上端の弧長の製図値。楕円は弧長が角度に比例しないので数値的に積む(ケープと同じ)
+    top_arc = modulate.ellipse_arc(
+        profile["semi_major"][0] + standoff,
+        profile["depth_ratio"][0],
+        FRONT_ANGLE - span_angle * 0.5,
+        FRONT_ANGLE + span_angle * 0.5,
+    )
+    mesh.design = {
+        "top_perimeter": None,  # 開いた弧なので閉ループの周長検算は使わない
+        "bottom_perimeter": None,
+        "bottom_fit_perimeter": None,
+        "bottom_perimeter_note": "前面だけの弧なので apron_top_arc / apron_flare で検算する",
+        "top_z": waist_z * scale,
+        "bottom_z": (waist_z - length) * scale,
+        "length": length * scale,
+        "depth_ratio_top": profile["depth_ratio"][0],
+        "depth_ratio_bottom": profile["depth_ratio"][-1],
+        # **周期成分の検査は掛けられない。** 半周ぶんの弧の半径列は円周のスペクトルに
+        # ならず、平らな弧でも k=3 が立つ(ケープが通るのは開きが40°で弧がほぼ全周だから)。
+        # 代わりに上端の弧長と広がりを**製図値**と突き合わせる(下の apron_* ゲート)
+        "radial_modulations": None,
+        "pleats": 0,
+        "pleat_depth": 0.0,
+        "boundary_loops": 1,  # 開いたシート = 外周1本
+        "boundary_verts": None,
+        # ---- 前スカート固有(validate 側のゲートが発火する)----
+        "apron_top_arc": top_arc * scale,
+        "apron_span_degrees": params["span_degrees"],
+        "apron_flare": profile["bottom_perimeter"] / profile["top_perimeter"],
+    }
+    return mesh
+
+
+def _closed_front_angles(segments):
+    """前が閉じた胴(かぶりもの)の角度。**前中心に頂点を置く**。
+
+    loft_rings(closed=True) と組で使う。前中心に頂点があるので、胸のふくらみも
+    ゼッケンの貼り位置も左右対称になる(前開きの版は隙間の中央に頂点が無い)。
+    分割数を4の倍数にすると、袖ぐりの中心(±X)にも頂点が来て左右が揃う。
+    """
+    step = 2.0 * math.pi / segments
+    return [FRONT_ANGLE + step * index for index in range(segments)]
+
+
 def _side_segment(angles, target):
     """target 角度に最も近い分割番号(袖ぐりを開ける位置を決めるのに使う)"""
     def gap(index):
@@ -632,6 +756,71 @@ def _side_segment(angles, target):
         return min(difference, 2.0 * math.pi - difference)
 
     return min(range(len(angles)), key=gap)
+
+
+def round_armhole(ring_points, segments, row_lo, row_hi, col_lo, col_hi, amount):
+    """袖ぐりの穴の**境界頂点を楕円へ載せて角を落とす**(純粋関数)。
+
+    `skip_faces` は格子から矩形の面群を抜くので、穴は四隅が直角の長方形になる。
+    実物の袖ぐりは丸いので、境界の頂点を「同じ差し渡しの楕円」の上へ動かす。
+
+    **面を抜く単位で丸めてはいけない。** 行ごとの幅を変える方式だと、袖ぐりが
+    3分割しかないとき幅は 3 か 1 しか取れず、1段狭めただけで境界に棘ができて
+    そこから作る袖が自己交差した(ワンピースで実証)。頂点の移動なら連続量なので
+    角だけを必要なぶん削れる。
+
+    矩形の境界では max(|u|,|v|)=1、楕円では hypot(u,v)=1 なので、
+    hypot で割れば矩形の境界がそのまま楕円へ写る(辺の中点は動かず、角がいちばん動く)。
+    穴の頂点数は偶数なので辺の中点にちょうど頂点が来るとは限らず、肩線リングの
+    最外点は**わずかに**動く(実測 0.2% 未満。肩幅ゲートの許容差 3% の内側)。
+
+    amount は 0(矩形のまま)〜1(完全な楕円)。戻り値は新しい ring_points。
+    """
+    if not 0.0 <= amount <= 1.0:
+        raise PartError("袖ぐりの丸めは 0〜1 にしてください: %r" % (amount,))
+    if amount == 0.0 or col_hi - col_lo < 2 or row_hi - row_lo < 2:
+        # 差し渡しが1分割しかない穴は、動かす先が境界の外になるので丸めない
+        return ring_points
+
+    def sample(row, col):
+        """格子を実数座標で双一次補間する(列は周方向に巻き戻す)"""
+        row0 = max(row_lo, min(row_hi - 1, int(math.floor(row))))
+        col0 = int(math.floor(col))
+        fr, fc = row - row0, col - col0
+        corners = [
+            ring_points[row0 + dr][(col0 + dc) % segments]
+            for dr, dc in ((0, 0), (0, 1), (1, 0), (1, 1))
+        ]
+        return tuple(
+            (corners[0][axis] * (1 - fc) + corners[1][axis] * fc) * (1 - fr)
+            + (corners[2][axis] * (1 - fc) + corners[3][axis] * fc) * fr
+            for axis in range(3)
+        )
+
+    half_col = (col_hi - col_lo) / 2.0
+    half_row = (row_hi - row_lo) / 2.0
+    moved = {}
+    for row in range(row_lo, row_hi + 1):
+        for col in range(col_lo, col_hi + 1):
+            on_edge = row in (row_lo, row_hi) or col in (col_lo, col_hi)
+            if not on_edge:
+                continue  # 穴の内側の頂点は面ごと消えるので動かす意味がない
+            u = (col - col_lo) / half_col - 1.0
+            v = (row - row_lo) / half_row - 1.0
+            radius = math.hypot(u, v)
+            if radius <= 1e-9:
+                continue
+            shrink = 1.0 + (1.0 / radius - 1.0) * amount
+            moved[(row, col % segments)] = sample(
+                row_lo + (v * shrink + 1.0) * half_row,
+                col_lo + (u * shrink + 1.0) * half_col,
+            )
+
+    # 元の格子から全部読んでから書く(先に書くと後続の補間が動いた点を拾う)
+    result = [list(ring) for ring in ring_points]
+    for (row, col), point in moved.items():
+        result[row][col] = point
+    return result
 
 
 def build_bodice(part, table, scale):
@@ -658,7 +847,8 @@ def build_bodice(part, table, scale):
     neck_semi = modulate.ellipse_semi_major(neck_perimeter, params["neck_depth_ratio"])
 
     # 肩線: 長半径がそのまま肩幅の半分(定義 #3 をここで満たす)
-    shoulder_semi = table["shoulder_width"] / 2.0
+    shoulder_width = table["shoulder_width"] * params["shoulder_width_scale"]
+    shoulder_semi = shoulder_width / 2.0
 
     # 胴: 肩の下でバストへ、ウエストで少し絞り、そこから裾へ
     bust_semi = modulate.ellipse_semi_major(table["bust"], body_depth)
@@ -672,7 +862,11 @@ def build_bodice(part, table, scale):
     front_gap = params["front_gap"] * height
     widest_semi = max(neck_semi, shoulder_semi, bust_semi, waist_semi, hem_semi)
     gap_angle = 2.0 * math.asin(min(0.9, front_gap / (2.0 * widest_semi)))
-    angles = _front_open_angles(segments, gap_angle)
+    # かぶりもの(水着・タンクトップ)は前が閉じる。隙間が無いので前立ての出番も無い
+    closed_front = params["front_style"] == "closed"
+    angles = (
+        _closed_front_angles(segments) if closed_front else _front_open_angles(segments, gap_angle)
+    )
 
     # 肩傾斜(定義 #9): 側頸点は肩先より「水平の渡り × tan(傾斜)」だけ高い
     slope = math.radians(table["shoulder_slope_degrees"])
@@ -783,15 +977,33 @@ def build_bodice(part, table, scale):
     # 角度方向・軸方向とも局所的な山にするので、袖ぐりにも裾にも触れない
     bust_amount = params["bust_projection"] * height
     bust_angular = math.radians(params["bust_angular_degrees"])
+    bust_apex = math.radians(params["bust_apex_degrees"])
     bust_axial = params["bust_axial_width"]
+
+    # ふくらみの**上側**は襟ぐりで止める。届かせると襟ぐりの縁そのものが前へ
+    # 押し出されて、横から見ると嘴のような角ができる(同梱4プリセット全部で
+    # 19〜29mm はみ出していた)。下側は spec の指定のまま — 実物の胸は下へ長い。
+    # 黙って切らずに、**設計値も詰めた値に差し替える**(thigh_target と同じ手口)
+    neck_front_z = snp_z - front_drop
+    headroom = bust_t - max(0.0, (shoulder_z - neck_front_z) / max(span, 1e-9))
+    bust_axial_up = min(bust_axial, max(BUST_AXIAL_MIN, headroom))
 
     def bust_bulge(angle, t):
         return modulate.bust_projection(
-            angle, t, bust_amount, bust_angular, bust_t, bust_axial, FRONT_ANGLE
+            angle,
+            t,
+            bust_amount,
+            bust_angular,
+            bust_t,
+            bust_axial,
+            FRONT_ANGLE,
+            bust_apex,
+            bust_axial_up,
         )
 
     ring_points = []
     front_profile = []
+    front_semi_profile = []
     for index, (zs, front_z, semi, depth) in enumerate(rows):
         # rows[0] と rows[1] は襟ぐりと肩線。胴の t は rows[2] から
         t = 0.0 if index < 2 else (index - 1) / (body_rings - 1)
@@ -812,24 +1024,52 @@ def build_bodice(part, table, scale):
                 -(semi * depth + bust_bulge(FRONT_ANGLE, t)) * scale,
             )
         )
+        front_semi_profile.append((front_z * scale, semi * scale))
 
     # 袖ぐり: 肩線の直下(リング1と2の間)から、袖ぐり深さのところまで(定義 #4)
-    armhole_depth = table["armhole_depth"]
+    armhole_depth = table["armhole_depth"] * params["armhole_depth_scale"]
     armhole_rows = max(1, min(int(round(armhole_depth / spacing)), body_rings - 2))
     armhole_segments = max(1, params["armhole_segments"])
     skip = set()
     centres = {}
+    spans = []
     for label, target in (("l", 0.0), ("r", math.pi)):
         centre = _side_segment(angles, target)
         centres[label] = centre
+        low = -(armhole_segments // 2)
+        high = armhole_segments - armhole_segments // 2
         for row in range(1, 1 + armhole_rows):
-            for offset in range(
-                -(armhole_segments // 2), armhole_segments - armhole_segments // 2
-            ):
+            for offset in range(low, high):
                 skip.add((row, (centre + offset) % segments))
+        # 面 (row, j) は頂点 j と j+1 を使うので、穴の頂点は high 側が1つ多い
+        spans.append((centre + low, centre + high))
+
+    # 穴の角を落として袖ぐりを丸くする(矩形のままだと実物に見えない)
+    for col_lo, col_hi in spans:
+        ring_points = round_armhole(
+            ring_points,
+            segments,
+            1,
+            1 + armhole_rows,
+            col_lo,
+            col_hi,
+            params["armhole_round"],
+        )
+
+    # 前面の実物を行ごとに書き出す(袖ぐりを丸めたあとの最終形から取る)。
+    # 前中心から左右 100 度ぶん。ゼッケンの幅(±30度)を余裕で覆う
+    front_span = math.radians(100.0)
+    front_surface = []
+    for (_zs, front_z, _semi, _depth), ring in zip(rows, ring_points):
+        row = [
+            (point[0], point[1])
+            for angle, point in zip(angles, ring)
+            if abs((angle - FRONT_ANGLE + math.pi) % (2.0 * math.pi) - math.pi) <= front_span
+        ]
+        front_surface.append((front_z * scale, sorted(row)))
 
     mesh = kernels.loft_rings(
-        ring_points, name=part["name"], closed=False, tubular=True, skip_faces=skip
+        ring_points, name=part["name"], closed=closed_front, tubular=True, skip_faces=skip
     )
     mesh.material = part["material"]
     mesh.design = {
@@ -850,14 +1090,16 @@ def build_bodice(part, table, scale):
         "radial_modulations": [],
         "pleats": 0,
         "pleat_depth": 0.0,
-        "boundary_loops": 3,  # 外周(襟ぐり+前開き+裾)1本 + 袖ぐり2本
+        # 前開き: 外周(襟ぐり+前開き+裾)1本 + 袖ぐり2本。
+        # かぶりもの: 前でつながらないので外周が襟ぐりと裾に割れて4本になる
+        "boundary_loops": 4 if closed_front else 3,
         "boundary_verts": None,
         # --- 定義 #1〜#6 を検証するための設計値 ---
         "neck_perimeter": neck_perimeter * scale,
-        "shoulder_width": table["shoulder_width"] * scale,
+        "shoulder_width": shoulder_width * scale,
         "shoulder_z": shoulder_z * scale,
         "armhole_depth": armhole_depth * scale,
-        "shoulder_span": (table["shoulder_width"] / 2.0 - neck_semi) * scale,
+        "shoulder_span": (shoulder_semi - neck_semi) * scale,
         "sleeve_length": table["sleeve_length"] * scale,
         # --- 定義 #7〜#9(形) ---
         "garment_length": garment_length * scale,
@@ -870,6 +1112,10 @@ def build_bodice(part, table, scale):
         "shoulder_slope_degrees": table["shoulder_slope_degrees"],
         # 前立てとボタンが乗る前中心の面。(z, 前面の y) を上から下へ
         "front_profile": front_profile,
+        # 前面の**実物**。(z, [(x, y), ...]) を上から下へ。幅のある布(ゼッケン)は
+        # ここから貼り位置を取る。前中心の y と断面の楕円で近似していたが、
+        # 胸の山が左右2つになると前中心は谷なので、近似だと布が胸に沈む(交差18件)
+        "front_surface": front_surface,
         # --- 定義 #18(胸のふくらみ) ---
         # 裾の前面より前へどれだけ出るか。楕円断面だけの胴だとほぼ 0 になる
         "bust_projection_over_hem": (
@@ -877,12 +1123,18 @@ def build_bodice(part, table, scale):
         )
         * scale,
         "bust_projection": bust_amount * scale,
-        # 前開きの隙間の最大幅。前立てはこれより広くないと隙間が見える(定義 #13)
-        "front_gap_width": max(
-            2.0 * semi * math.sin(gap_angle * 0.5) for _zs, _front_z, semi, _depth in rows
-        )
-        * scale,
+        # 襟ぐりで詰めたあとの上側の半幅(spec の指定と違うことがある)
+        "bust_axial_width_up": bust_axial_up,
+        "bust_axial_width": bust_axial,
     }
+    if not closed_front:
+        # 前開きの隙間の最大幅。前立てはこれより広くないと隙間が見える(定義 #13)。
+        # かぶりものには隙間が無いので**キーごと出さない**(0 を入れると
+        # 「幅 >= 0」で前立てゲートが素通りする)
+        mesh.design["front_gap_width"] = (
+            max(2.0 * semi * math.sin(gap_angle * 0.5) for _zs, _front_z, semi, _depth in rows)
+            * scale
+        )
     if not flat_hem:
         # --- 定義 #16(裾のシャツテール) --- キーの有無がゲートのスイッチ。
         # shirttail の胴だけが「裾が曲がっていること」を検査される
@@ -972,8 +1224,10 @@ def build_sleeve(part, table, scale, host=None):
     # 袖丈は**肩先から袖口まで**(定義 #6)。筒は袖ぐりの重心から伸ばすので、
     # 「肩先からの距離が袖丈になる軸長」を解く。重心から袖丈ぶん伸ばすと
     # 肩先→袖口が袖丈を超える(袖ぐりの重心は肩先より内側かつ下にある)
+    # 肩先は**胴が実際に作った肩線**から取る(サイズ表から引き直さない)。
+    # 胴が shoulder_width_scale で肩線を詰めていると、表の値では袖が肩の外に出る
     shoulder_point = (
-        sign * table["shoulder_width"] / 2.0 * scale,
+        sign * host.design["shoulder_width"] / 2.0,
         0.0,
         host.design["shoulder_z"],
     )
@@ -1204,6 +1458,47 @@ def build_collar_fall(part, table, scale, host=None):
     return mesh
 
 
+def front_surface_sampler(surface):
+    """前面の実物 `(z, [(x, y), ...])` から y(x, z) を読む補間器を返す(純粋関数)。
+
+    前中心の y だけを見て断面を楕円で近似すると、胸の山が左右2つあるときに
+    前中心が谷になり、幅のある布(前立て・ゼッケン)が胸に沈む(交差ゲートで実証)。
+    **相手の頂点をそのまま線形に読む**ので、相手のメッシュ面と一致する。
+
+    行は上から下へ。行間は z で線形補間し、範囲外は端の行に張り付く。
+    """
+    rows = [(z, list(points)) for z, points in surface]
+    if not rows:
+        raise PartError("front_surface が空です")
+
+    def along_row(points, x):
+        if x <= points[0][0]:
+            return points[0][1]
+        for index in range(1, len(points)):
+            left, right = points[index - 1], points[index]
+            if left[0] <= x <= right[0]:
+                if right[0] == left[0]:
+                    return right[1]
+                local = (x - left[0]) / (right[0] - left[0])
+                return left[1] + (right[1] - left[1]) * local
+        return points[-1][1]
+
+    def sample(x, z):
+        if z >= rows[0][0]:
+            return along_row(rows[0][1], x)
+        for index in range(1, len(rows)):
+            upper_z, upper = rows[index - 1]
+            lower_z, lower = rows[index]
+            if lower_z <= z <= upper_z:
+                if upper_z == lower_z:
+                    return along_row(lower, x)
+                local = (upper_z - z) / (upper_z - lower_z)
+                return along_row(upper, x) + (along_row(lower, x) - along_row(upper, x)) * local
+        return along_row(rows[-1][1], x)
+
+    return sample
+
+
 def build_placket(part, table, scale, host=None):
     """前立て。前中心を縦に走る帯(定義 #13)。
 
@@ -1253,15 +1548,22 @@ def build_placket(part, table, scale, host=None):
     if len(heights) < 2:
         raise PartError("前立てを張る高さが足りません: %r" % (heights,))
 
+    # 帯は幅があるので、**前中心の y ではなく相手の面を x ごとに読む**。
+    # 前中心だけを見ると、胸の山が左右2つあるとき谷に貼ることになり、
+    # 帯の端(±1.5cm)が胸に沈む(交差ゲートで実証)
+    surface = (host.design or {}).get("front_surface")
+    surface_y = front_surface_sampler(surface) if surface else (lambda x, z: front_y(z))
+
     ring_points = []
     for z in heights:
-        base_y = front_y(z) - standoff
         points = []
         for column in range(columns):
             u = column / (columns - 1)  # 0 = +X 側、1 = -X 側
             x = half - width * u
             # 中央がいちばん前に出る
-            points.append((x, base_y - bulge * math.sin(math.pi * u), z))
+            points.append(
+                (x, surface_y(x, z) - standoff - bulge * math.sin(math.pi * u), z)
+            )
         ring_points.append(points)
 
     mesh = kernels.loft_rings(
@@ -1292,10 +1594,130 @@ def build_placket(part, table, scale, host=None):
         # 単一の placket_front_y(全体の最前点)だけだと、前面が z で動く胴
         # (ワンピースの胸→ウエスト)でボタンが布から浮く
         "placket_front_profile": [
-            (z, front_y(z) - standoff - bulge) for z in heights
+            (z, surface_y(0.0, z) - standoff - bulge) for z in heights
         ],
         # 覆う相手。これより狭いと前開きが黒い筋として見える
         "front_gap_width": (host.design or {}).get("front_gap_width"),
+    }
+    return mesh
+
+
+def build_patch(part, table, scale, host=None):
+    """ゼッケン(名札)。胴の前面に貼る一枚の布。スク水の白い名札がこれ。
+
+    前立てと違うのは**幅があること**。前中心の y だけで平らな板を貼ると、
+    幅の端(左右 8cm)で胴の断面が後ろへ逃げるぶんだけ布が浮いて、
+    貼り紙が胸の前に浮いているように見える。断面の長半径を相手からもらって
+    楕円に沿わせる(前中心を通る楕円に縮めるので、必ず胴の**外側**に来る)。
+    """
+    if host is None:
+        raise PartError("patch は attach_to で胴パーツを指定してください(前面の実寸が必要)")
+    design = host.design or {}
+    profile = design.get("front_profile")
+    surface = design.get("front_surface")
+    if not profile or not surface:
+        raise PartError("%s に front_profile / front_surface がありません" % (host.name,))
+
+    params = part["params"]
+    height = table["height"]
+    width = params["width"] * height * scale
+    patch_height = params["height"] * height * scale
+    standoff = params["standoff"] * height * scale
+    # **奇数にする。** 前中心に頂点が無いと、いちばん前に出る頂点が中心から
+    # ずれた列になり、そこは断面が後ろへ逃げているぶん浮きが目減りする
+    # (「胴の前面より手前」の検査が設計どおり作っても落ちる)
+    columns = max(3, params["columns"]) | 1
+    half = width * 0.5
+
+    # 縦の刻みは**相手の行に吸着させる**(丈は spec の指定に一番近い行まで)。
+    # 理由は2つ。相手の折れ点を跨いで直線で張ると前面が動く区間で胴の中へ食い込む
+    # (前立てと同じ罠)。そして折れ点と等間隔の点を混ぜると刻みが不揃いになり、
+    # 軸方向エッジ長のばらつきの検査に落ちる。行に乗せれば両方いっぺんに解ける。
+    # **その代わり丈は指定どおりにならない**ので、設計値は吸着後の実寸にする
+    knots = [z for z, _y in profile]
+    span = knots[0] - knots[-1]
+    target_top = knots[0] - params["top_inset"] * span
+    top_index = min(range(len(knots)), key=lambda index: abs(knots[index] - target_top))
+    if top_index >= len(knots) - 1:
+        raise PartError(
+            "ゼッケンの上端が胴の裾に寄りすぎです(top_inset %.2f)" % (params["top_inset"],)
+        )
+    target_bottom = knots[top_index] - patch_height
+    bottom_index = min(
+        range(top_index + 1, len(knots)),
+        key=lambda index: abs(knots[index] - target_bottom),
+    )
+    top_z = knots[top_index]
+    bottom_z = knots[bottom_index]
+    patch_height = top_z - bottom_z
+
+    # rows は「最低これだけ刻む」の意味。相手の行の間隔を等分するので、
+    # 相手が等間隔なら刻みも等間隔のまま
+    intervals = bottom_index - top_index
+    factor = max(1, -(-max(1, params["rows"]) // intervals))
+    heights = []
+    for index in range(intervals):
+        upper, lower = knots[top_index + index], knots[top_index + index + 1]
+        for step in range(factor):
+            heights.append(upper + (lower - upper) * step / factor)
+    heights.append(bottom_z)
+
+    surface_rows = {round(z, 9): row for z, row in surface}
+
+    def surface_y(x, z):
+        """相手の前面の y を (x, z) で読む。**行は相手の行に吸着済み**なので
+        z の補間は要らず、行の中を x で線形に読むだけ = 相手の面そのもの"""
+        row = surface_rows.get(round(z, 9))
+        if row is None:  # pragma: no cover - 吸着しているので通らない
+            raise PartError("ゼッケンの高さ %r が胴の行に乗っていません" % (z,))
+        if x <= row[0][0]:
+            return row[0][1]
+        for index in range(1, len(row)):
+            left, right = row[index - 1], row[index]
+            if left[0] <= x <= right[0]:
+                if right[0] == left[0]:
+                    return right[1]
+                local = (x - left[0]) / (right[0] - left[0])
+                return left[1] + (right[1] - left[1]) * local
+        return row[-1][1]
+
+    ring_points = []
+    for z in heights:
+        points = []
+        for column in range(columns):
+            u = column / (columns - 1)  # 0 = +X 側、1 = -X 側
+            x = half - width * u
+            points.append((x, surface_y(x, z) - standoff, z))
+        ring_points.append(points)
+
+    mesh = kernels.loft_rings(ring_points, name=part["name"], closed=False, tubular=False)
+    mesh.material = part["material"]
+    mesh.design = {
+        "top_perimeter": None,
+        "bottom_perimeter": None,
+        "bottom_fit_perimeter": None,
+        "bottom_perimeter_note": None,
+        "top_z": top_z,
+        "bottom_z": bottom_z,
+        "length": None,
+        "depth_ratio_top": None,
+        "depth_ratio_bottom": None,
+        "radial_modulations": [],
+        "pleats": 0,
+        "pleat_depth": 0.0,
+        "boundary_loops": 1,  # 開いたシート = 外周1本
+        "boundary_verts": None,
+        # --- ゼッケンの検証用 ---
+        "patch_width": width,
+        "patch_height": patch_height,
+        "patch_standoff": standoff,
+        # 貼った区間で胴がいちばん前に出ている y。**前中心ではなく貼った範囲の
+        # 実物から取る**(胸の山は左右にあるので、前中心を基準にすると沈む)。
+        # ゼッケンがこれより前に無いと「胸に埋まった名札」になる
+        # (交差ゲートは面が交わるまで気付かない)
+        "patch_host_front_y": min(
+            surface_y(point[0], point[2]) for ring in ring_points for point in ring
+        ),
     }
     return mesh
 
@@ -1442,6 +1864,106 @@ def build_buttons(part, table, scale, host=None):
     return mesh
 
 
+def seam_groups(part_names, joints):
+    """joints で繋がったパーツ名をまとめる(**純粋関数**。bpy 非依存)。
+
+    別オブジェクトのままだと Blender は頂点法線を繋がないので、面が連続していても
+    継ぎ目に陰影の段が出る(「布の切れ目」に見える線の正体)。統合する単位を
+    ここで決めて、実際の結合は build.py が Blender に投げる。
+
+    戻り値: パーツ名のリストのリスト。**入力順を保つ**(結合後の名前が
+    spec の並びで決まるようにするため)。繋がっていないパーツは1要素の組になる。
+    """
+    parent = {name: name for name in part_names}
+
+    def find(name):
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    for joint in joints:
+        a, b = joint.get("a"), joint.get("b")
+        if a in parent and b in parent:
+            root_a, root_b = find(a), find(b)
+            if root_a != root_b:
+                parent[root_b] = root_a
+
+    groups = {}
+    for name in part_names:
+        groups.setdefault(find(name), []).append(name)
+    return [groups[find(name)] for name in part_names if find(name) == name]
+
+
+#: 仕上げに積む標準モディファイアの名前(build.py が同名で作り直す)
+SUBSURF_MODIFIER = "Costume_Smooth"
+SOLIDIFY_MODIFIER = "Costume_Thickness"
+
+
+def finish_modifiers(part_mesh, thickness, levels):
+    """このパーツに積む標準モディファイアの一覧を決める(**純粋関数**。bpy 非依存)。
+
+    素の格子をそのまま出すと、断面が24角形なので襟ぐりも袖ぐりも裾も
+    多角形の縁として見え、布は厚みゼロの紙になる。**どちらも自前で作らない** —
+    CLAUDE.md の「仕上げは標準モディファイアに投げる」に従って Subsurf と
+    Solidify に任せる(層1の検査は素の格子に対して行うので影響を受けない)。
+
+    順序は **Subsurf → Solidify**。逆にすると Solidify が作った細いリム面まで
+    Subsurf が丸めて、厚みが2/3ほど痩せる。先に滑らかにしてから等厚で押し出せば
+    厚みは指定どおりに残り、裁ち端は実物どおり角が立つ。
+
+    硬い部品(ボタン)には掛けない。円盤の縁が丸まって白い塊に見えるうえ、
+    厚みはもともとジオメトリで作ってある。
+
+    戻り値: [(名前, 種別, {プロパティ: 値}), ...]
+    """
+    if thickness < 0.0:
+        raise PartError("布の厚みは 0 以上にしてください: %r" % (thickness,))
+    if levels < 0:
+        raise PartError("細分レベルは 0 以上にしてください: %r" % (levels,))
+    if part_mesh.flat_shaded:
+        return []
+    stack = []
+    if levels > 0:
+        stack.append(
+            (
+                SUBSURF_MODIFIER,
+                "SUBSURF",
+                {
+                    "levels": int(levels),
+                    "render_levels": int(levels),
+                    # 開いたシート(前垂れ・ゼッケン)の角を保つ。既定のまま丸めると
+                    # 布が縮んで相手から浮く
+                    "boundary_smooth": "PRESERVE_CORNERS",
+                    "uv_smooth": "PRESERVE_BOUNDARIES",
+                },
+            )
+        )
+    if thickness > 0.0:
+        stack.append(
+            (
+                SOLIDIFY_MODIFIER,
+                "SOLIDIFY",
+                {
+                    "thickness": float(thickness),
+                    # **厚みは内へ出す**(元の面が外側)。ゼッケンも前垂れも
+                    # 「相手の**外側の面**から standoff だけ浮かせる」で組んであるので、
+                    # 外へ膨らませると胴が浮かせ量を追い越してゼッケンが布に沈む
+                    # (外向きで実際に沈んだ)。内向きなら層の関係が設計のまま残る
+                    "offset": -1.0,
+                    "use_rim": True,
+                    # 均等オフセットは鋭い折れ目で 1/cos に比例して伸び、
+                    # 股の縫い目に棘を作る(自己交差が 26 件)。切っておく
+                    "use_even_offset": False,
+                    # 分岐(股)のように面が鋭く折り重なる所は複雑モードでないと
+                    # シェルが交差する(26 件 → 4 件)
+                    "solidify_mode": "NON_MANIFOLD",
+                },
+            )
+        )
+    return stack
+
+
 BUILDERS = {
     "skirt_body": build_skirt_body,
     "waistband": build_waistband,
@@ -1454,12 +1976,14 @@ BUILDERS = {
     "placket": build_placket,
     "buttons": build_buttons,
     "hood": build_hood,
+    "patch": build_patch,
+    "apron": build_apron,
 }
 
 #: 他のパーツの**実物**から作るパーツ。build_all が依存順を保証する。
 #: 継ぎ目や位置を計算し直さずに相手の頂点をそのまま使うので、ずれが原理的に起きない
 DEPENDENT_TYPES = frozenset(
-    ("sleeve", "collar", "collar_fall", "placket", "buttons", "hood")
+    ("sleeve", "collar", "collar_fall", "placket", "buttons", "hood", "patch")
 )
 
 # spec が知っているパーツ種別と、ここで作れる種別がずれていないことを import 時に確かめる

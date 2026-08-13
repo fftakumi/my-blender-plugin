@@ -125,12 +125,38 @@ def test_parse_reaches_the_pants_preset():
 def test_the_thigh_gate_survives_a_coarse_leg_grid():
     """保持区間 [blend, THIGH_HOLD_T] に行が乗らない粗い割りでも thigh ゲートが
     消えないこと(消えると「針の脚」の網に穴が開く。PR #8 レビュー)。
-    設計値はその行のプロファイル値に切り替わる"""
-    for leg_rings in (3, 4, 6):
+    設計値はその行のプロファイル値に切り替わる。
+
+    leg_rings=6 は保持区間に行が乗らない(t=0.167 / 0.333)ので**フォールバック側**、
+    8 は t=0.25 が乗るので通常側を通る。3・4 を使っていたが、それらは
+    leg_rings × blend が LEG_BLEND_MIN_ROWS を割って生成側で弾かれるようになった
+    (分岐→円の移行が1行で終わると折れ目ができる。docs のスク水の節)"""
+    for leg_rings in (6, 8):
         normalized, built = build_pants({"Pants_Body": {"leg_rings": leg_rings}})
         report, entry = pants_entry(built, normalized)
         assert "pants_thigh_l" in entry["hard"], leg_rings
         assert report["failed"] == [], (leg_rings, report["failed"])
+
+
+def test_a_one_row_blend_is_rejected():
+    """分岐→円の移行が1行で終わる割りは弾く。面同士は交差しないので層1は通るが、
+    折り返しに近い折れ目ができ、厚みを付けた瞬間にシェルが交差する"""
+    spec = spec_module.load_preset("pants")
+    body = next(part for part in spec["parts"] if part["type"] == "pants")
+    body["params"]["leg_rings"] = 4
+    body["params"]["blend"] = 0.25  # 4 × 0.25 = 1.0 < 1.5
+    normalized = spec_module.normalize_spec(spec)
+    with pytest.raises(parts.PartError) as error:
+        parts.build_all(normalized)
+    assert "leg_rings" in str(error.value)
+
+
+def test_the_shipped_pants_preset_clears_the_blend_floor():
+    """回帰ガード: 同梱プリセットが新しい下限に掛かっていないこと"""
+    spec = spec_module.load_preset("pants")
+    body = next(part for part in spec["parts"] if part["type"] == "pants")
+    product = body["params"]["leg_rings"] * body["params"]["blend"]
+    assert product >= parts.LEG_BLEND_MIN_ROWS, product
 
 
 # ---------------------------------------- 層3a: spec を壊すとゲートが落ちる

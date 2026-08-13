@@ -1,0 +1,125 @@
+{
+  "schema": 1,
+  "name": "swimsuit",
+  "assumed_height": 1.58,
+  "ease": 0.06,
+  "meters_per_unit": 1.0,
+  "poly_budget": 20000,
+  "materials": {
+    "main": {
+      "base_color": [
+        0.01096,
+        0.023153,
+        0.111932
+      ],
+      "roughness": 0.55,
+      "sheen": 0.12
+    },
+    "trim": {
+      "base_color": [
+        0.887923,
+        0.887923,
+        0.871367
+      ],
+      "roughness": 0.68,
+      "sheen": 0.15
+    }
+  },
+  "parts": [
+    {
+      "type": "bodice",
+      "name": "Swimsuit_Body",
+      "material": "main",
+      "params": {
+        "front_style": "closed",
+        "hem_style": "flat",
+        "length_scale": 0.55,
+        "segments": 44,
+        "rings": 15,
+        "bust_t": 0.44,
+        "waist_t": 1.0,
+        "waist_scale": 0.7714,
+        "hem_scale": 0.7714,
+        "neck_ease": 1.0,
+        "neck_depth_ratio": 0.85,
+        "shoulder_depth_ratio": 0.6,
+        "neck_fade": 0.11,
+        "armhole_segments": 5,
+        "armhole_depth_scale": 0.8,
+        "bust_projection": 0.012,
+        "shoulder_width_scale": 0.9
+      }
+    },
+    {
+      "type": "patch",
+      "name": "Swimsuit_NameTag",
+      "material": "trim",
+      "attach_to": "Swimsuit_Body",
+      "params": {
+        "width": 0.105,
+        "height": 0.07,
+        "top_inset": 0.36,
+        "standoff": 0.0012,
+        "columns": 9,
+        "rows": 2
+      }
+    },
+    {
+      "type": "patch",
+      "name": "Swimsuit_NameTag_Print",
+      "material": "main",
+      "attach_to": "Swimsuit_Body",
+      "params": {
+        "width": 0.075,
+        "height": 0.021,
+        "top_inset": 0.53,
+        "standoff": 0.0018,
+        "columns": 9,
+        "rows": 1
+      }
+    },
+    {
+      "type": "pants",
+      "name": "Swimsuit_Brief",
+      "material": "main",
+      "params": {
+        "waist_z": 0.60483,
+        "segments": 44,
+        "hip_rings": 12,
+        "leg_rings": 5,
+        "crotch_segments": 4,
+        "rise_scale": 0.95,
+        "inseam_scale": 0.03,
+        "thigh_ease": 0.0,
+        "knee_scale": 1.4468,
+        "hem_scale": 1.3439,
+        "blend": 0.3
+      }
+    },
+    {
+      "type": "apron",
+      "name": "Swimsuit_Apron",
+      "material": "main",
+      "params": {
+        "waist_z": 0.60483,
+        "length": 0.095,
+        "span_degrees": 170.0,
+        "segments": 25,
+        "rings": 8,
+        "flare": 1.0,
+        "flare_curve": 1.0,
+        "standoff": 0.0025
+      }
+    }
+  ],
+  "joints": [
+    {
+      "a": "Swimsuit_Body",
+      "a_ring": "bottom",
+      "b": "Swimsuit_Brief",
+      "b_ring": "top",
+      "kind": "sewn"
+    }
+  ],
+  "subdivision": 0
+}
