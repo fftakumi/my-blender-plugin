@@ -323,13 +323,16 @@ def main():
     # 「1パーツ = 1オブジェクト」を前提にした検査(存在・頂点の一致・折り目の本数)は
     # 成り立たない。統合の代表パーツだけを見て、**その代わり評価後メッシュと
     # UV/マテリアルは統合後の実物に対して検査する**(黙って緩めない)
-    joined = bool(normalized.get("join_seams"))
     targets = built["parts"]
-    if joined:
+    # **統合したパーツだけ**を対象外にする。全体フラグにすると、統合されていない
+    # 単独パーツ(ゼッケン・前垂れ)の hard ゲートまで黙って消える(PR #10 レビュー)
+    merged = set()
+    if normalized.get("join_seams"):
         groups = parts.seam_groups(
             [mesh.name for mesh in built["parts"]], normalized["joints"]
         )
         roots = {group[0] for group in groups}
+        merged = {group[0] for group in groups if len(group) > 1}
         targets = [mesh for mesh in built["parts"] if mesh.name in roots]
         report["joined_groups"] = groups
 
@@ -343,15 +346,17 @@ def main():
             }
             continue
         verts, faces = object_geometry(obj)
+        # 統合された組だけ、頂点が溶接されて数も並びも変わる。単独パーツは無傷
+        welded = part_mesh.name in merged
         entry = {
             "uv": uv_report(obj),
             "material": material_report(obj),
             # 統合後は頂点が溶接されて数も並びも変わるので、spec との一致は問えない
-            "spec_match": None if joined else compare_to_spec(part_mesh, verts, faces),
+            "spec_match": None if welded else compare_to_spec(part_mesh, verts, faces),
             "evaluated": validate.raw_mesh_report(
                 obj.name, *(lambda g: (g["verts"], g["faces"]))(build.evaluated_part_mesh(obj))
             ),
-            "creases": None if joined else crease_report(obj, part_mesh),
+            "creases": None if welded else crease_report(obj, part_mesh),
             "modifiers": [(modifier.name, modifier.type) for modifier in obj.modifiers],
         }
         layer2[part_mesh.name] = entry

@@ -7,12 +7,20 @@
   "poly_budget": 6000,
   "materials": {
     "main": {
-      "base_color": [0.45, 0.5, 0.62],
+      "base_color": [
+        0.45,
+        0.5,
+        0.62
+      ],
       "roughness": 0.74,
       "sheen": 0.25
     },
     "trim": {
-      "base_color": [0.85, 0.85, 0.83],
+      "base_color": [
+        0.85,
+        0.85,
+        0.83
+      ],
       "roughness": 0.42,
       "sheen": 0.1
     }
@@ -27,7 +35,8 @@
         "length_scale": 0.55,
         "hem_scale": 0.7714,
         "segments": 28,
-        "rings": 12
+        "rings": 12,
+        "bust_t": 0.34
       }
     },
     {

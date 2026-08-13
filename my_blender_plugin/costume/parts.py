@@ -1003,7 +1003,6 @@ def build_bodice(part, table, scale):
 
     ring_points = []
     front_profile = []
-    front_semi_profile = []
     for index, (zs, front_z, semi, depth) in enumerate(rows):
         # rows[0] と rows[1] は襟ぐりと肩線。胴の t は rows[2] から
         t = 0.0 if index < 2 else (index - 1) / (body_rings - 1)
@@ -1024,7 +1023,6 @@ def build_bodice(part, table, scale):
                 -(semi * depth + bust_bulge(FRONT_ANGLE, t)) * scale,
             )
         )
-        front_semi_profile.append((front_z * scale, semi * scale))
 
     # 袖ぐり: 肩線の直下(リング1と2の間)から、袖ぐり深さのところまで(定義 #4)
     armhole_depth = table["armhole_depth"] * params["armhole_depth_scale"]
@@ -1126,6 +1124,10 @@ def build_bodice(part, table, scale):
         # 襟ぐりで詰めたあとの上側の半幅(spec の指定と違うことがある)
         "bust_axial_width_up": bust_axial_up,
         "bust_axial_width": bust_axial,
+        # ふくらみが始まる高さ。**稜線の検査はここより下だけを見る** —
+        # 襟ぐりまで見ると、胸から襟ぐりへ布が引けていく肩ヨークの傾きを
+        # 拾ってしまい、ふくらみを 0 にしても消えない床(ブラウスで 54.8 度)ができる
+        "bust_top_z": (shoulder_z - (bust_t - bust_axial_up) * span) * scale,
     }
     if not closed_front:
         # 前開きの隙間の最大幅。前立てはこれより広くないと隙間が見える(定義 #13)。

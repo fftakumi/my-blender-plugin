@@ -412,25 +412,36 @@ def test_bust_ridge_grows_with_the_bulge():
     assert angles[0] < angles[1] < angles[2]
 
 
-def test_bust_ridge_ignores_everything_above_the_neckline():
-    """襟ぐりより上(肩紐・襟ぐりの縁)を混ぜると稜線を取り違える
-    (実際スク水で 37 度が 55 度に化けた)。
+def test_bust_ridge_drops_everything_above_z_max():
+    """z_max より上の点は稜線の候補から外れる。外さないと、胸より前へ出た
+    別の場所(肩紐・襟ぐりの縁)が頂点に化ける"""
+    chest = ridge_wedge(0.20, 0.04)  # 頂点 z=0.10、y=-0.04
+    intruder = (0.0, -0.30, 0.26)    # ずっと前に出た点を上に置く
+    verts = chest + [intruder]
 
-    実態は「襟ぐりでも布はまだ前に出ていて、その上の肩紐が急に後退する」形。
-    その段差を胸の稜線と読むと、なだらかな胸でも急に見える"""
-    chest = []
-    for index in range(21):
-        z = index / 20.0 * 0.20
-        # 頂点 z=0.10 で y=-0.06、襟ぐり z=0.20 では -0.02 までしか戻らない
-        y = -0.06 * (z / 0.10) if z <= 0.10 else -0.06 + 0.04 * (z - 0.10) / 0.10
-        chest.append((0.0, y, z))
-    straps = [(0.0, -0.002, 0.205), (0.0, -0.001, 0.21)]
-    verts = chest + straps
+    assert validate.bust_ridge_degrees(verts)["apex_z"] == pytest.approx(0.26)
+    clipped = validate.bust_ridge_degrees(verts, z_max=0.21)
+    assert clipped["apex_z"] == pytest.approx(0.10, abs=0.01)
+    assert clipped["degrees"] == pytest.approx(21.8, abs=0.5)
 
-    gentle = validate.bust_ridge_degrees(verts, z_max=0.20)["degrees"]
-    contaminated = validate.bust_ridge_degrees(verts)["degrees"]
-    assert gentle == pytest.approx(21.8, abs=1.0)  # 0.04/0.10 = 21.8度
-    assert contaminated > 60.0  # 段差を稜線と読むと急に化ける
+
+def test_bust_ridge_is_local_to_the_apex():
+    """**頂点の直上だけ**を測る。上へ広く取ると、胸から襟ぐりへ布が引けていく
+    肩ヨークの傾きを拾い、ふくらみを 0 にしても消えない床ができる
+    (ブラウスで 54.8 度。PR #10 レビュー)"""
+    # 頂点直上はなだらか、そこから離れた上のほうだけ急、という形
+    verts = []
+    for index in range(41):
+        z = index / 40.0 * 0.40
+        if z <= 0.10:
+            y = -0.06 * z / 0.10
+        elif z <= 0.30:
+            y = -0.06 + 0.01 * (z - 0.10) / 0.20   # なだらか(約2.9度)
+        else:
+            y = -0.05 + 0.05 * (z - 0.30) / 0.10   # 急(45度)= ヨークの見立て
+        verts.append((0.0, y, z))
+    measured = validate.bust_ridge_degrees(verts)["degrees"]
+    assert measured < 10.0, measured  # 遠くの急な区間を拾っていない
 
 
 def test_bust_ridge_handles_degenerate_input():
@@ -440,16 +451,32 @@ def test_bust_ridge_handles_degenerate_input():
     assert validate.bust_ridge_degrees([(0.0, 1.0, 0.0), (0.0, 2.0, 1.0)])["degrees"] is None
 
 
-def test_the_swimsuit_bust_is_not_a_cone_but_the_default_still_warns():
-    """回帰ガード: スク水(0.012)は通り、既定 0.022 のままの3つは警告が出る。
-    この差が「バスト周の二重計上」の実測(docs のスク水の節)"""
-    verdicts = {}
-    for name in ("blouse", "vest", "onepiece", "swimsuit"):
+def test_every_shipped_bodice_clears_the_cone_gate():
+    """同梱プリセットは全部通ること。**届かない warn を出しっぱなしにしない** —
+    直せない警告はいずれ無視され、ゲート全体の信頼を削る(PR #10 レビュー)"""
+    for name in spec_module.list_presets():
         normalized = spec_module.load_preset(name)
         report = validate.costume_report(parts.build_all(normalized), normalized)
+        for entry in report["parts"]:
+            if "measured_bust_ridge_degrees" not in entry:
+                continue
+            gate = entry["warn"]["bust_is_not_a_cone"]
+            assert gate["ok"], (name, entry["part"], gate["value"])
+
+
+def test_the_cone_gate_responds_to_the_bulge_not_the_yoke():
+    """ふくらみを 0 にしたら指標も落ちること。落ちないなら胸ではなく
+    別の場所(肩ヨーク)を測っている(初版がそれで、床が 54.8 度だった)"""
+    angles = {}
+    for projection in (0.0, 0.022, 0.080):
+        spec = spec_module.load_preset("blouse")
+        bodice = next(p for p in spec["parts"] if p["type"] == "bodice")
+        bodice["params"]["bust_projection"] = projection
+        normalized = spec_module.normalize_spec(spec)
+        report = validate.costume_report(parts.build_all(normalized), normalized)
         entry = next(e for e in report["parts"] if "measured_bust_ridge_degrees" in e)
-        verdicts[name] = entry["warn"]["bust_is_not_a_cone"]["ok"]
-    assert verdicts["swimsuit"] is True
-    assert verdicts["blouse"] is False
-    assert verdicts["vest"] is False
-    assert verdicts["onepiece"] is False
+        angles[projection] = entry["measured_bust_ridge_degrees"]
+
+    assert angles[0.0] < 15.0, angles          # ふくらみが無ければ床は低い
+    assert angles[0.0] < angles[0.022] < angles[0.080]
+    assert angles[0.080] > validate.BUST_RIDGE_MAX_DEGREES  # 盛りすぎは捕まる

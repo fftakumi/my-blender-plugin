@@ -954,11 +954,10 @@ def part_report(mesh, height_units):
             )
             # 「在るか」(上の下限)だけでは**在りすぎ**を見ていない。
             # 稜線が立つと横から見て円錐にとがる
-            # 襟ぐりより上(肩紐・襟ぐりの縁)は稜線ではないので外す
-            neck_front_z = design.get("top_z")
-            if neck_front_z is not None:
-                neck_front_z -= design.get("built_front_neck_drop", 0.0)
-            ridge = bust_ridge_degrees(verts, neck_front_z)
+            # **ふくらみが始まる高さより下だけ**を見る。襟ぐりまで広げると、
+            # 胸から襟ぐりへ布が引けていく肩ヨークの傾きを拾い、ふくらみを 0 に
+            # しても消えない床ができる(ブラウスで 54.8 度。PR #10 レビュー)
+            ridge = bust_ridge_degrees(verts, design.get("bust_top_z"))
             report["measured_bust_ridge_degrees"] = ridge["degrees"]
             if ridge["degrees"] is not None:
                 warn["bust_is_not_a_cone"] = _check(
@@ -1046,12 +1045,17 @@ def part_report(mesh, height_units):
         hard["apron_flare"] = _within(
             report["measured_apron_flare"], design["apron_flare"], DIM_TOL
         )
+        # 落ちたときに原因が読めるよう、**ずれの実測値**を載せる
         hard["apron_centred"] = _check(
-            report["measured_apron_centred"], report["measured_apron_top_arc"], "前中心"
+            report["measured_apron_centred"],
+            report["measured_apron_centre_offset"],
+            "x のずれ 0",
         )
         # 前を向いていること。後ろに回っていたらそれはケープであって前垂れではない
         hard["apron_faces_front"] = _check(
-            report["measured_apron_faces_front"], report["measured_apron_faces_front"], True
+            report["measured_apron_faces_front"],
+            report["measured_apron_centre_y"],
+            "布の重心 y < 0(前)",
         )
 
     # ---- ゼッケン(スク水の名札) ----
@@ -1269,7 +1273,7 @@ def seam_distance(mesh_a, ring_a, mesh_b, ring_b):
 
 
 def bust_ridge_degrees(verts, z_max=None, bins=24):
-    """前面の稜線(高さごとのいちばん前の点)の**上りの最大傾き**を度で返す。
+    """前面の稜線(高さごとのいちばん前の点)の**頂点直上の傾き**を度で返す。
 
     とがった胸は、頂点へ向かう傾きが立って折り返しが鋭くなる。
     「胸のふくらみが在るか」は `bust_projection` が下限で見ているが、
@@ -1283,7 +1287,7 @@ def bust_ridge_degrees(verts, z_max=None, bins=24):
     `z_max` は**襟ぐりより上を外す**ための上限(前中心の襟ぐりの高さを渡す)。
     外さないと肩紐や襟ぐりの縁を稜線と取り違える(スク水で実測 37 度が 55 度に化けた)。
 
-    戻り値: {"degrees": 上りの最大傾き(度), "apex_z": 頂点の高さ, "profile": [(z, y)]}
+    戻り値: {"degrees": 頂点直上の傾き(度), "apex_z": 頂点の高さ, "profile": [(z, y)]}
     """
     front = [
         (point[2], point[1])
@@ -1308,18 +1312,21 @@ def bust_ridge_degrees(verts, z_max=None, bins=24):
         return {"degrees": None, "apex_z": None, "profile": profile}
 
     apex = min(range(len(profile)), key=lambda index: profile[index][1])
-    steepest = 0.0
-    # 頂点より**上**の区間だけを見る(下は腰へ向かう自然な falloff)。
+    # **頂点のすぐ上だけ**を測る。上へ広く取ると、胸から襟ぐりへ布が引けていく
+    # 肩ヨークの傾きを拾ってしまい、**ふくらみを 0 にしても消えない床**ができる
+    # (ブラウスで 54.8 度。0.018 以下は全部この床に張り付いて指標が動かなくなる。
+    #  PR #10 レビュー)。局所にすると床は 6.1 度まで下がり、ふくらみの量に
+    # 単調に反応するようになる。
     # **高さの差が区間の半分に満たないペアは飛ばす** — 襟ぐりの前下がりで
     # 代表点どうしがほぼ同じ高さに来ると、傾きが無限大に近く跳ねる
     gap = step * 0.5
-    for index in range(apex, len(profile)):
-        for other in range(index + 1, len(profile)):
-            rise = profile[other][0] - profile[index][0]
-            if rise < gap:
-                continue
-            steepest = max(steepest, (profile[other][1] - profile[index][1]) / rise)
-            break
+    steepest = 0.0
+    for other in range(apex + 1, len(profile)):
+        rise = profile[other][0] - profile[apex][0]
+        if rise < gap:
+            continue
+        steepest = (profile[other][1] - profile[apex][1]) / rise
+        break
     return {
         "degrees": math.degrees(math.atan(steepest)),
         "apex_z": profile[apex][0],
@@ -1522,7 +1529,9 @@ def apron_metrics(mesh):
         "measured_apron_top_arc": open_arc_length(mesh.verts, top) if top else None,
         "measured_apron_flare": None,
         "measured_apron_centred": None,
+        "measured_apron_centre_offset": None,
         "measured_apron_faces_front": None,
+        "measured_apron_centre_y": None,
     }
     if top and bottom:
         top_arc = open_arc_length(mesh.verts, top)
@@ -1530,10 +1539,13 @@ def apron_metrics(mesh):
             result["measured_apron_flare"] = open_arc_length(mesh.verts, bottom) / top_arc
     xs = [point[0] for point in mesh.verts]
     if xs:
-        result["measured_apron_centred"] = abs(max(xs) + min(xs)) < 1e-6
+        offset = max(xs) + min(xs)  # 左右対称なら 0
+        result["measured_apron_centre_offset"] = offset
+        result["measured_apron_centred"] = abs(offset) < 1e-6
     # 布の重心が前(-Y)にあること。ケープ(後ろに布)との取り違えを捕まえる
     if mesh.verts:
         centre_y = sum(point[1] for point in mesh.verts) / len(mesh.verts)
+        result["measured_apron_centre_y"] = centre_y
         result["measured_apron_faces_front"] = centre_y < 0.0
     return result
 
