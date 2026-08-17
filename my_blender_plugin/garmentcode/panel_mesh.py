@@ -11,6 +11,7 @@ bpy 側(`build.py`)の仕事。ここでやるのはその **入力** を作る�
 chain はステッチの相手合わせに使うので、向きが揃っていないと縫合がねじれる。
 """
 
+import bisect
 import math
 
 from . import curves
@@ -134,11 +135,82 @@ def polygon_area(polygon):
     return abs(total) * 0.5
 
 
+def row_crossings(y, polygon):
+    """走査線 y と外形の交点 x を昇順で返す純粋関数(`point_in_polygon` と同じ判定則)
+
+    閉じた多角形なら交点数は必ず偶数なので、「x より大きい交点が奇数個 = 内側」は
+    「x 以下の交点が奇数個」と同値。行ごとに1回だけ作れば全格子点で使い回せる。
+    """
+    crossings = []
+    count = len(polygon)
+    j = count - 1
+    for i in range(count):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        if (yi > y) != (yj > y):
+            crossings.append((xj - xi) * (y - yi) / (yj - yi) + xi)
+        j = i
+    crossings.sort()
+    return crossings
+
+
+def segment_grid(polygon, cell):
+    """外形の辺を一様格子へ振り分ける純粋関数。{(cx, cy): [辺の添字, ...]}
+
+    辺の bounding box が触るセルすべてに入れる(保守的なので取りこぼさない)。
+    """
+    grid = {}
+    count = len(polygon)
+    for i in range(count):
+        ax, ay = polygon[i]
+        bx, by = polygon[(i + 1) % count]
+        x0 = int(math.floor(min(ax, bx) / cell))
+        x1 = int(math.floor(max(ax, bx) / cell))
+        y0 = int(math.floor(min(ay, by) / cell))
+        y1 = int(math.floor(max(ay, by) / cell))
+        for cx in range(x0, x1 + 1):
+            for cy in range(y0, y1 + 1):
+                grid.setdefault((cx, cy), []).append(i)
+    return grid
+
+
+def near_polygon(x, y, polygon, grid, cell, margin):
+    """点が外形の辺から margin 以内かを返す純粋関数
+
+    `distance_to_polygon(...) <= margin` と同値だが、全辺を見ずに済ませる。
+    セル幅 >= margin なら、margin 以内の辺は必ず 3x3 近傍のどれかに登録されている。
+    """
+    count = len(polygon)
+    base_x = int(math.floor(x / cell))
+    base_y = int(math.floor(y / cell))
+    for offset_x in (-1, 0, 1):
+        for offset_y in (-1, 0, 1):
+            for i in grid.get((base_x + offset_x, base_y + offset_y), ()):
+                ax, ay = polygon[i]
+                bx, by = polygon[(i + 1) % count]
+                dx, dy = bx - ax, by - ay
+                squared = dx * dx + dy * dy
+                if squared < 1e-18:
+                    found = math.hypot(x - ax, y - ay)
+                else:
+                    t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / squared))
+                    found = math.hypot(x - (ax + dx * t), y - (ay + dy * t))
+                if found <= margin:
+                    return True
+    return False
+
+
 def hex_interior_points(boundary, target_edge):
     """外形の内側に六方格子の内部点を撒いて返す純粋関数
 
     境界から `target_edge * INTERIOR_MARGIN` 以内には置かない
     (境界のリサンプル点と潰れた三角形を作らないため)。
+
+    ★ 素朴に「全格子点 x 全辺」を回すと概ね O(1/target_edge^3) になり、
+      target_edge をオペレーターの下限 0.2cm まで下げると同期の execute() の中で
+      分単位に膨れて Blender が固まったように見える(実測: 5パネルで
+      1.5cm→0.03秒 / 0.5cm→0.77秒 / 0.2cm→12.3秒)。内外判定は行ごとの走査線、
+      境界からの距離は辺の格子で近傍だけに絞って、辺の本数から切り離す。
     """
     if target_edge <= 0.0:
         raise ValueError("target_edge は正の数で指定してください")
@@ -149,14 +221,18 @@ def hex_interior_points(boundary, target_edge):
     dx = target_edge
     dy = target_edge * HEX_ROW_RATIO
     margin = target_edge * INTERIOR_MARGIN
+    grid = segment_grid(boundary, margin)
 
     interior = []
     row = 0
     y = y0 + dy * 0.5
     while y < y1:
+        crossings = row_crossings(y, boundary)
         x = x0 + (0.0 if row % 2 == 0 else dx * 0.5) + dx * 0.5
         while x < x1:
-            if point_in_polygon(x, y, boundary) and distance_to_polygon(x, y, boundary) > margin:
+            if bisect.bisect_right(crossings, x) % 2 == 1 and not near_polygon(
+                x, y, boundary, grid, margin, margin
+            ):
                 interior.append((x, y))
             x += dx
         y += dy

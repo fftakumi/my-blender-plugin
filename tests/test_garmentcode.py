@@ -364,6 +364,62 @@ def test_hex_interior_points_stay_inside_with_a_margin():
         assert panel_mesh.distance_to_polygon(x, y, boundary) > margin
 
 
+def _naive_hex_interior(boundary, target_edge):
+    """高速化する前の素朴な走査(全格子点 x 全辺)。同値であることの基準にする"""
+    xs = [point[0] for point in boundary]
+    ys = [point[1] for point in boundary]
+    x0, x1 = min(xs), max(xs)
+    y0, y1 = min(ys), max(ys)
+    dx = target_edge
+    dy = target_edge * panel_mesh.HEX_ROW_RATIO
+    margin = target_edge * panel_mesh.INTERIOR_MARGIN
+    out = []
+    row = 0
+    y = y0 + dy * 0.5
+    while y < y1:
+        x = x0 + (0.0 if row % 2 == 0 else dx * 0.5) + dx * 0.5
+        while x < x1:
+            if panel_mesh.point_in_polygon(x, y, boundary) and (
+                panel_mesh.distance_to_polygon(x, y, boundary) > margin
+            ):
+                out.append((x, y))
+            x += dx
+        y += dy
+        row += 1
+    return out
+
+
+def test_hex_interior_matches_the_naive_scan_on_a_real_panel(parsed):
+    boundary, _chains = panel_mesh.panel_boundary(parsed["panels"]["right_ftorso"], 1.5)
+    assert panel_mesh.hex_interior_points(boundary, 1.5) == _naive_hex_interior(boundary, 1.5)
+
+
+@pytest.mark.parametrize("target_edge", [0.4, 0.9, 2.0])
+def test_hex_interior_matches_the_naive_scan_on_a_concave_outline(target_edge):
+    # L 字。1行に交点が4つ出るので、走査線のパリティを間違えると凹部が埋まる
+    boundary = [(0.0, 0.0), (10.0, 0.0), (10.0, 4.0), (4.0, 4.0), (4.0, 10.0), (0.0, 10.0)]
+    assert panel_mesh.hex_interior_points(boundary, target_edge) == _naive_hex_interior(
+        boundary, target_edge
+    )
+
+
+def test_near_polygon_agrees_with_the_exact_distance():
+    boundary = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    margin = 0.93
+    grid = panel_mesh.segment_grid(boundary, margin)
+    for x in (0.5, 0.94, 1.5, 5.0, 9.2, 9.8):
+        for y in (0.5, 0.94, 5.0, 9.5):
+            exact = panel_mesh.distance_to_polygon(x, y, boundary) <= margin
+            assert panel_mesh.near_polygon(x, y, boundary, grid, margin, margin) == exact
+
+
+def test_row_crossings_are_sorted_and_even_in_number():
+    boundary = [(0.0, 0.0), (10.0, 0.0), (10.0, 4.0), (4.0, 4.0), (4.0, 10.0), (0.0, 10.0)]
+    crossings = panel_mesh.row_crossings(2.0, boundary)
+    assert crossings == sorted(crossings)
+    assert len(crossings) % 2 == 0
+
+
 def test_hex_interior_rows_use_the_sqrt3_over_2_ratio():
     boundary, _chains = panel_mesh.panel_boundary(_SQUARE, 1.0)
     rows = sorted({round(y, 6) for _x, y in panel_mesh.hex_interior_points(boundary, 1.0)})
@@ -492,6 +548,14 @@ def test_build_sewing_edges_reports_missing_edges():
     assert stats["stitches"] == 0
 
 
+def test_build_sewing_edges_reports_both_sides_when_both_are_missing():
+    """片方しか出さないと、直して再取り込みしてももう片方がまた出てくる"""
+    stitch = [({"panel": "ghost_a", "edge": 1}, {"panel": "ghost_b", "edge": 3})]
+    sewing, stats = stitches.build_sewing_edges(stitch, {}, [])
+    assert sewing == []
+    assert stats["missing"] == [("ghost_a", 1), ("ghost_b", 3)]
+
+
 def test_gap_stats():
     verts = [(0.0, 0.0, 0.0), (0.0, 0.0, 2.0), (0.0, 0.0, 0.0), (0.0, 0.0, 4.0)]
     assert stitches.gap_stats([(0, 1), (2, 3)], verts) == {"mean": 3.0, "max": 4.0, "count": 2}
@@ -551,6 +615,17 @@ def test_is_limb_panel_by_label_and_by_name():
     assert limbs.is_limb_panel("sl_right_cuff_f", {"label": None})
     assert limbs.is_limb_panel("left_sleeve_b", {})
     assert not limbs.is_limb_panel("right_ftorso", {"label": "body"})
+
+
+@pytest.mark.parametrize("name", ["garment_front", "warm_layer", "charm", "alarm_panel"])
+def test_is_limb_panel_does_not_match_arm_inside_a_longer_word(name):
+    """部分一致だと garment / warm が手足に化け、胴パネルが最大 40cm 動かされる"""
+    assert not limbs.is_limb_panel(name, {"label": None})
+
+
+@pytest.mark.parametrize("name", ["arm", "right-arm-1", "sleeve.001", "L_Arm_F"])
+def test_is_limb_panel_matches_whole_words_across_separators(name):
+    assert limbs.is_limb_panel(name, {"label": None})
 
 
 def test_clusters_separate_the_sleeve_span_from_the_cuff_span(limb_scene):
@@ -715,11 +790,66 @@ def test_count_face_components_counts_islands():
 
 
 def test_pair_groups_merges_chains_of_pairs():
-    assert topology.pair_groups([(0, 1), (1, 2), (5, 6)]) == [[0, 1, 2], [5, 6]]
+    assert topology.pair_groups([(0, 1), (1, 2), (5, 6)]) == ([[0, 1, 2], [5, 6]], 0)
 
 
 def test_pair_groups_is_deterministic():
-    assert topology.pair_groups([(6, 5), (2, 1), (1, 0)]) == [[0, 1, 2], [5, 6]]
+    assert topology.pair_groups([(6, 5), (2, 1), (1, 0)]) == ([[0, 1, 2], [5, 6]], 0)
+
+
+def test_weld_blockers_cover_one_and_two_hops():
+    # 三角形2枚が辺 (1,2) を共有。外側は 0 と 3
+    blockers = topology.weld_blockers([(0, 1, 2), (1, 3, 2)])
+    assert blockers[0] == {1, 2, 3}  # 3 は2ホップ(0-1-3)
+    assert blockers[3] == {0, 1, 2}
+    assert 0 not in blockers[0]
+
+
+def test_weld_blockers_do_not_reach_across_a_gap():
+    """別パネルは布の辺で繋がっていないので、2ホップまで見ても互いを禁じない"""
+    blockers = topology.weld_blockers([(0, 1, 2), (10, 11, 12)])
+    assert blockers[0] == {1, 2}
+    assert blockers[10] == {11, 12}
+
+
+def test_weld_blockers_prevent_two_faces_from_folding_onto_each_other():
+    """0 と 3 を1点にすると (0,1,2) と (1,3,2) が同じ3頂点になって片方消える"""
+    faces = [(0, 1, 2), (1, 3, 2)]
+    blockers = topology.weld_blockers(faces)
+    groups, skipped = topology.pair_groups([(0, 3)], blocked=blockers)
+    assert groups == []
+    assert skipped == 1
+
+
+def test_pair_groups_refuses_to_merge_two_ends_of_a_real_edge():
+    """0-1-2 が本物の面エッジで繋がっているとき、それらを1点に潰してはいけない"""
+    blocked = {0: {1}, 1: {0, 2}, 2: {1}}
+    groups, skipped = topology.pair_groups([(0, 1), (1, 2), (5, 6)], blocked=blocked)
+    assert groups == [[5, 6]]
+    assert skipped == 2
+
+
+def test_pair_groups_still_welds_across_panels_when_nothing_is_adjacent():
+    # 縫合相手 (10, 11) は布の辺で繋がっていないので普通に溶接される
+    blocked = {0: {1}, 1: {0}}
+    groups, skipped = topology.pair_groups([(0, 10), (1, 11)], blocked=blocked)
+    assert groups == [[0, 10], [1, 11]]
+    assert skipped == 0
+
+
+def test_pair_groups_greedily_keeps_the_first_pair_of_a_many_to_one_match():
+    """袖の隣接頂点 0,1 が同じカフ頂点 9 に当たっても、片方だけが溶接される"""
+    blocked = {0: {1}, 1: {0}}
+    groups, skipped = topology.pair_groups([(0, 9), (1, 9)], blocked=blocked)
+    assert groups == [[0, 9]]
+    assert skipped == 1
+
+
+def test_pair_groups_blocked_result_does_not_depend_on_input_order():
+    blocked = {0: {1}, 1: {0}}
+    forward = topology.pair_groups([(0, 9), (1, 9)], blocked=blocked)
+    backward = topology.pair_groups([(1, 9), (0, 9)], blocked=blocked)
+    assert forward == backward
 
 
 # --------------------------------------------------------------------------
@@ -977,3 +1107,20 @@ def test_import_report_warns_about_missing_stitch_edges():
     assembled["sew_stats"]["missing"] = [("ghost", 3)]
     _info, warnings = operators.garmentcode_import_report(assembled, parsed_stub)
     assert any("ghost[3]" in line for line in warnings)
+
+
+def test_import_report_warns_when_centring_could_not_be_applied():
+    """センタリング失敗は「袖がずり落ちる」失敗モードそのもの。INFO に埋めない"""
+    parsed_stub = {"panels": {"a": {}, "b": {}}, "stitches": [], "properties": {}}
+    assembled = _fake_assembled(2)
+    assembled["limb_report"] = [
+        {
+            "panels": ["sleeve", "cuff"],
+            "applied": False,
+            "offset": None,
+            "note": "測定窓に素体の点が入りませんでした",
+        }
+    ]
+    info, warnings = operators.garmentcode_import_report(assembled, parsed_stub)
+    assert any("測定窓に素体の点が入りませんでした" in line for line in warnings)
+    assert not any("手足センタリング" in line for line in info)

@@ -809,9 +809,14 @@ def garmentcode_import_report(assembled, parsed):
 
     面コンポーネント数がパネル数と食い違うのは「どこかで全体マージが掛かって
     別パネルが溶接された」ことの証拠なので、黙って通さず必ず警告に出す。
+
+    センタリングを **適用できなかった** ときも WARNING に出す。これは
+    「袖がずり落ちる」という limbs.py の第1の失敗モードそのもので、
+    統計と同じ INFO に混ぜると長いベイクを回した後に気付くことになる。
     """
     stats = assembled["sew_stats"]
     gaps = assembled["gaps"]
+    warnings = list(gc_spec.spec_warnings(parsed))
     info = [
         "パネル %d 枚 / 頂点 %d / 面 %d"
         % (len(parsed["panels"]), len(assembled["verts"]), len(assembled["faces"])),
@@ -827,16 +832,19 @@ def garmentcode_import_report(assembled, parsed):
         info.append("初期ギャップ 平均 %.2fcm / 最大 %.2fcm" % (gaps["mean"], gaps["max"]))
     for entry in assembled["limb_report"]:
         offsets = entry.get("offset") or {}
-        info.append(
-            "手足センタリング %s: %s%s"
-            % (
-                ",".join(entry["panels"]),
-                " ".join("%s%+.2f" % item for item in sorted(offsets.items())) or "測定なし",
-                "" if entry["applied"] else "(適用せず: %s)" % entry.get("note", ""),
+        names = ",".join(entry["panels"])
+        if entry["applied"]:
+            info.append(
+                "手足センタリング %s: %s"
+                % (names, " ".join("%s%+.2f" % item for item in sorted(offsets.items())))
             )
-        )
+        else:
+            warnings.append(
+                "手足センタリングを適用できませんでした %s: %s。"
+                "このままだと縫合で筒が自分の重心へ閉じて袖がずり落ちます"
+                % (names, entry.get("note", "理由不明"))
+            )
 
-    warnings = list(gc_spec.spec_warnings(parsed))
     if stats["missing"]:
         warnings.append(
             "ステッチが存在しないエッジを指しています: %s"
@@ -938,9 +946,13 @@ class MYPLUGIN_OT_import_garmentcode(bpy.types.Operator):
 
         body_points = []
         if self.auto_center_limbs and self.body_name:
-            body = bpy.data.objects.get(self.body_name)
+            # draw() の prop_search と同じ scene.objects から引く。bpy.data から引くと
+            # このシーンに無いオブジェクトを掴み、depsgraph の評価結果と食い違う
+            body = context.scene.objects.get(self.body_name)
             if body is None or body.type != "MESH":
-                self.report({"WARNING"}, "素体 %r が見つかりません" % self.body_name)
+                self.report(
+                    {"WARNING"}, "素体 %r がこのシーンに見つかりません" % self.body_name
+                )
             else:
                 body_points = gc_build.body_sample_points(
                     context.evaluated_depsgraph_get(), body
@@ -995,8 +1007,11 @@ class MYPLUGIN_OT_weld_garmentcode_seams(bpy.types.Operator):
         default=True,
     )
     max_gap: bpy.props.FloatProperty(
-        name="ギャップ警告のしきい値",
-        description="溶接前のギャップがこれを超えていたら、そこは縫合が失敗している疑いがある [cm]",
+        name="ギャップ上限",
+        description=(
+            "溶接前のギャップがこれを超えていたら縫合が閉じていないので、"
+            "何も溶接せずに中止する [cm]。溶接は間の三角形ごと潰すので後戻りできない"
+        ),
         default=2.0,
         min=0.0,
     )
@@ -1020,9 +1035,15 @@ class MYPLUGIN_OT_weld_garmentcode_seams(bpy.types.Operator):
             return {"CANCELLED"}
 
         try:
-            stats = gc_weld.weld_sewing_pairs(duplicate, remove_loose=self.remove_loose)
+            stats = gc_weld.weld_sewing_pairs(
+                duplicate, remove_loose=self.remove_loose, max_gap=self.max_gap
+            )
         except RuntimeError as error:
+            # 中止したときは複製を残さない(メッシュも道連れにしないと 0 ユーザーで残る)
+            orphan = duplicate.data
             bpy.data.objects.remove(duplicate, do_unlink=True)
+            if orphan.users == 0:
+                bpy.data.meshes.remove(orphan)
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
 
@@ -1038,12 +1059,11 @@ class MYPLUGIN_OT_weld_garmentcode_seams(bpy.types.Operator):
                 stats["components"],
             ),
         )
-        if stats["gap_max"] > self.max_gap:
+        if stats["skipped_pairs"]:
             self.report(
-                {"WARNING"},
-                "溶接前のギャップが最大 %.2fcm ありました(しきい値 %.2fcm)。"
-                "そこは縫合が閉じていない可能性があります"
-                % (stats["gap_max"], self.max_gap),
+                {"INFO"},
+                "布の隣り合う頂点を潰さないよう %d 本のペアは溶接を見送りました"
+                % stats["skipped_pairs"],
             )
         return {"FINISHED"}
 

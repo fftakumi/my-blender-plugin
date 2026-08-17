@@ -43,12 +43,20 @@ MIN_ELONGATION = 1.15
 AXIS_NAMES = "XYZ"
 
 
+def _name_tokens(name):
+    """パネル名を区切り文字で語に割る。部分一致だと garment / warm が "arm" に化ける"""
+    lowered = name.lower()
+    for separator in "-.":
+        lowered = lowered.replace(separator, "_")
+    return set(lowered.split("_"))
+
+
 def is_limb_panel(name, panel, labels=LIMB_PANEL_LABELS, keywords=LIMB_NAME_KEYWORDS):
     """パネルが手足(筒)候補かどうかを返す純粋関数"""
     if panel.get("label") in labels:
         return True
-    lowered = name.lower()
-    return any(keyword in lowered for keyword in keywords)
+    tokens = _name_tokens(name)
+    return any(keyword in tokens for keyword in keywords)
 
 
 def garment_centroid(verts):

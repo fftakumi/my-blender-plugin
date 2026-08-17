@@ -43,10 +43,11 @@ def duplicate_evaluated(context, source):
     return duplicate
 
 
-def weld_sewing_pairs(obj, remove_loose=True):
+def weld_sewing_pairs(obj, remove_loose=True, max_gap=DEFAULT_MAX_GAP):
     """孤立エッジのペアを連結成分ごとに1点へ溶接する。統計の dict を返す。
 
-    縫合エッジが1本も無ければ RuntimeError。
+    縫合エッジが1本も無いとき、および最大ギャップが max_gap を超えるときは
+    **何も変更せずに** RuntimeError。
     """
     import bmesh
     from mathutils import Vector
@@ -79,8 +80,23 @@ def weld_sewing_pairs(obj, remove_loose=True):
     gap_max = max(gaps)
     gap_mean = sum(gaps) / len(gaps)
 
+    if gap_max > max_gap:
+        # 溶接は不可逆(間の三角形ごと潰れる)なので、閉じていない縫い目を見つけたら
+        # 何も壊さずに降りる。判定を weld の後に置くと壊れた結果だけが残る
+        bm.free()
+        raise RuntimeError(
+            "溶接前のギャップが最大 %.2fcm あります(上限 %.2fcm)。"
+            "縫合が閉じ切っていないので溶接しません。"
+            "シミュレーションを進めるか、意図的なら上限を上げてください" % (gap_max, max_gap)
+        )
+
+    # 本物の布の面から「一緒にしてはいけない頂点」を出す(判定は topology 側の純粋関数)
+    blockers = topology.weld_blockers(
+        [tuple(vertex.index for vertex in face.verts) for face in bm.faces]
+    )
+
     targetmap = {}
-    groups = topology.pair_groups(pairs)
+    groups, skipped = topology.pair_groups(pairs, blocked=blockers)
     for members in groups:
         vertices = [bm.verts[index] for index in members]
         centre = Vector((0.0, 0.0, 0.0))
@@ -119,6 +135,7 @@ def weld_sewing_pairs(obj, remove_loose=True):
     return {
         "pairs": len(pairs),
         "groups": len(groups),
+        "skipped_pairs": skipped,
         "gap_max": gap_max,
         "gap_mean": gap_mean,
         "before": before,

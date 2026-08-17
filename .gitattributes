@@ -1,0 +1,11 @@
+# 行末は LF に固定する。
+# Windows で作業すると core.autocrlf=true により CRLF が混入し、1行だけ直したはずの
+# ファイルが「全行変更」としてコミットされて blame と差分が読めなくなる
+# (実際に operators.py が 260 行の追加に対し 1069/822 行の差分になった)。
+* text=auto eol=lf
+
+# バイナリは変換しない
+*.png binary
+*.jpg binary
+*.blend binary
+*.zip binary

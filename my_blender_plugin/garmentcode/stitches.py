@@ -81,7 +81,12 @@ def build_sewing_edges(stitches, chains_by_panel, verts):
         chain_a = chains_by_panel.get(key_a)
         chain_b = chains_by_panel.get(key_b)
         if not chain_a or not chain_b:
-            missing.append(key_a if not chain_a else key_b)
+            # 両側とも欠けていることがある。片方だけ報告すると、直して再取り込みしても
+            # もう片方がまた出てくる
+            if not chain_a:
+                missing.append(key_a)
+            if not chain_b:
+                missing.append(key_b)
             continue
         pairs, was_reversed = pair_stitch(chain_a, chain_b, verts)
         reversed_count += 1 if was_reversed else 0
