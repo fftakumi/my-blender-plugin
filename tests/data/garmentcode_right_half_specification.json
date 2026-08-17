@@ -1,0 +1,152 @@
+{
+ "_comment": "GarmentCode blouse_final_specification.json の右半身だけを切り出した回帰用フィクスチャ。円弧(circle)・三次ベジエ(cubic)の曲率、ダーツ先端の自己ループ縫合、袖+カフの手足クラスタが全部入っている。",
+ "pattern": {
+  "panels": {
+   "right_ftorso": {
+    "translation": [0.0, 96.44974529793481, 30.0],
+    "rotation": [-0.0, 0.0, 0.0],
+    "vertices": [
+     [0, 0],
+     [0.0, 28.66480987176687],
+     [-5.252629999999999, 35.25354860531797],
+     [-10.554334602675766, 33.857419845338],
+     [-17.91854879165773, 21.171259845338],
+     [-19.882350000000002, 17.25670015305829],
+     [-10.078894879195651, 13.975700153058286],
+     [-19.882350000000002, 10.694700153058283],
+     [-18.305566666666667, 0],
+     [-9.252016668527695, 3.862005324231123e-16],
+     [-7.67523333519436, 9.49519914865519],
+     [-6.0984500018610275, 0.0]
+    ],
+    "edges": [
+     {"endpoints": [0, 1]},
+     {
+      "endpoints": [1, 2],
+      "label": "right_collar",
+      "curvature": {"type": "circle", "params": [5.38810255552729, 0, 0]}
+     },
+     {"endpoints": [2, 3]},
+     {
+      "endpoints": [3, 4],
+      "label": "right_armhole",
+      "curvature": {"type": "cubic", "params": [[0.5, 0.2], [0.8, 0.35]]}
+     },
+     {"endpoints": [4, 5]},
+     {"endpoints": [5, 6]},
+     {"endpoints": [6, 7]},
+     {"endpoints": [7, 8]},
+     {"endpoints": [8, 9]},
+     {"endpoints": [9, 10]},
+     {"endpoints": [10, 11]},
+     {"endpoints": [11, 0]}
+    ],
+    "label": "body"
+   },
+   "right_sleeve_f": {
+    "translation": [-43.670438439415705, 130.3071651432728, 17.5],
+    "rotation": [-0.0, 0.0, 0.0],
+    "vertices": [
+     [0, 0],
+     [0, -29.939063268253346],
+     [26.447841484497914, -29.939063268253346],
+     [34.420152, 0.0]
+    ],
+    "edges": [
+     {"endpoints": [0, 1]},
+     {"endpoints": [1, 2]},
+     {
+      "endpoints": [2, 3],
+      "curvature": {
+       "type": "cubic",
+       "params": [[0.33490981928758534, 0.0073949248352444905], [0.5748160375517122, -0.1110098942534282]]
+      }
+     },
+     {"endpoints": [3, 0]}
+    ],
+    "label": "arm"
+   },
+   "right_sleeve_b": {
+    "translation": [-43.670438439415705, 130.3071651432728, -12.5],
+    "rotation": [-0.0, 0.0, 0.0],
+    "vertices": [
+     [0, 0],
+     [34.420152, 0.0],
+     [26.447841484497914, -29.569217161476914],
+     [0, -29.56921716147692]
+    ],
+    "edges": [
+     {"endpoints": [0, 1]},
+     {
+      "endpoints": [1, 2],
+      "curvature": {
+       "type": "cubic",
+       "params": [[0.4325661607814639, 0.11313654970701606], [0.6627952865644771, -0.007807387161146327]]
+      }
+     },
+     {"endpoints": [2, 3]},
+     {"endpoints": [3, 0]}
+    ],
+    "label": "arm"
+   },
+   "sl_right_cuff_f": {
+    "translation": [-55.3786864394157, 130.3071651432728, 17.5],
+    "rotation": [-0.0, 0.0, -90.0],
+    "vertices": [
+     [0, 0],
+     [10.626478648166119, 0],
+     [10.626478648166119, 9.708248],
+     [0, 9.708248]
+    ],
+    "edges": [
+     {"endpoints": [0, 1]},
+     {"endpoints": [1, 2]},
+     {"endpoints": [2, 3]},
+     {"endpoints": [3, 0]}
+    ],
+    "label": "arm"
+   },
+   "sl_right_cuff_b": {
+    "translation": [-55.3786864394157, 130.3071651432728, -12.5],
+    "rotation": [-0.0, 0.0, -90.0],
+    "vertices": [
+     [0, 0],
+     [0, 9.708248],
+     [10.626478648166119, 9.708248],
+     [10.626478648166119, 0]
+    ],
+    "edges": [
+     {"endpoints": [0, 1]},
+     {"endpoints": [1, 2]},
+     {"endpoints": [2, 3]},
+     {"endpoints": [3, 0]}
+    ],
+    "label": "arm"
+   }
+  },
+  "stitches": [
+   [{"panel": "right_ftorso", "edge": 6}, {"panel": "right_ftorso", "edge": 5}],
+   [{"panel": "right_ftorso", "edge": 10}, {"panel": "right_ftorso", "edge": 9}],
+   [{"panel": "sl_right_cuff_f", "edge": 3}, {"panel": "sl_right_cuff_b", "edge": 0}],
+   [{"panel": "sl_right_cuff_f", "edge": 1}, {"panel": "sl_right_cuff_b", "edge": 2}],
+   [{"panel": "right_sleeve_f", "edge": 3}, {"panel": "right_sleeve_b", "edge": 0}],
+   [{"panel": "right_sleeve_f", "edge": 1}, {"panel": "right_sleeve_b", "edge": 2}],
+   [{"panel": "sl_right_cuff_f", "edge": 2}, {"panel": "right_sleeve_f", "edge": 0}],
+   [{"panel": "sl_right_cuff_b", "edge": 1}, {"panel": "right_sleeve_b", "edge": 3}],
+   [{"panel": "right_sleeve_f", "edge": 2}, {"panel": "right_ftorso", "edge": 3}]
+  ],
+  "panel_order": [
+   "sl_right_cuff_b",
+   "sl_right_cuff_f",
+   "right_sleeve_b",
+   "right_sleeve_f",
+   "right_ftorso"
+  ]
+ },
+ "properties": {
+  "curvature_coords": "relative",
+  "normalize_panel_translation": false,
+  "normalized_edge_loops": true,
+  "units_in_meter": 100
+ }
+}

@@ -9,6 +9,7 @@ from .costume import (
     spec as costume_spec,
     validate,
 )
+from .garmentcode import spec as gc_spec
 
 
 def grid_positions(count, spacing):
@@ -803,12 +804,258 @@ class MYPLUGIN_OT_generate_costume_ai(bpy.types.Operator):
             workspace.status_text_set(text)
 
 
+def garmentcode_import_report(assembled, parsed):
+    """取り込み結果を UI へ出す (INFO の行, WARNING の行) を返す純粋関数
+
+    面コンポーネント数がパネル数と食い違うのは「どこかで全体マージが掛かって
+    別パネルが溶接された」ことの証拠なので、黙って通さず必ず警告に出す。
+    """
+    stats = assembled["sew_stats"]
+    gaps = assembled["gaps"]
+    info = [
+        "パネル %d 枚 / 頂点 %d / 面 %d"
+        % (len(parsed["panels"]), len(assembled["verts"]), len(assembled["faces"])),
+        "縫合エッジ %d 本(ステッチ %d 組・向き反転 %d・ダーツ先端の自己ループ %d を除外)"
+        % (
+            len(assembled["sewing"]),
+            stats["stitches"],
+            stats["reversed"],
+            stats["self_loops"],
+        ),
+    ]
+    if gaps:
+        info.append("初期ギャップ 平均 %.2fcm / 最大 %.2fcm" % (gaps["mean"], gaps["max"]))
+    for entry in assembled["limb_report"]:
+        offsets = entry.get("offset") or {}
+        info.append(
+            "手足センタリング %s: %s%s"
+            % (
+                ",".join(entry["panels"]),
+                " ".join("%s%+.2f" % item for item in sorted(offsets.items())) or "測定なし",
+                "" if entry["applied"] else "(適用せず: %s)" % entry.get("note", ""),
+            )
+        )
+
+    warnings = list(gc_spec.spec_warnings(parsed))
+    if stats["missing"]:
+        warnings.append(
+            "ステッチが存在しないエッジを指しています: %s"
+            % ", ".join("%s[%d]" % key for key in stats["missing"])
+        )
+    if assembled["components"] != len(parsed["panels"]):
+        warnings.append(
+            "面コンポーネントが %d でパネル数 %d と一致しません。"
+            "少ない場合はパネル同士が溶接されています(全体マージを掛けていないか確認)"
+            % (assembled["components"], len(parsed["panels"]))
+        )
+    return info, warnings
+
+
+class MYPLUGIN_OT_import_garmentcode(bpy.types.Operator):
+    """GarmentCode の縫製パターン(*_specification.json)を布シミュ用メッシュとして取り込む"""
+
+    bl_idname = "myplugin.import_garmentcode"
+    bl_label = "GarmentCode パターンを取り込む"
+    bl_description = (
+        "GarmentCode の *_specification.json を読み、平面パネルを縫合エッジ付きの"
+        "1つのメッシュとして 3D に配置する。素体を指定すると袖・カフを腕の軸へ"
+        "自動センタリングする(素体は読むだけで変更しない)。"
+        "Cloth の設定は Blender 標準の プロパティ > 物理演算 > クロス で行う"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    filepath: bpy.props.StringProperty(
+        name="spec ファイル",
+        description="GarmentCode が出力した *_specification.json",
+        default="",
+        subtype="FILE_PATH",
+    )
+    filter_glob: bpy.props.StringProperty(default="*.json", options={"HIDDEN"})
+    target_edge: bpy.props.FloatProperty(
+        name="目標エッジ長",
+        description=(
+            "三角形分割の刻み [cm]。細かいほど布らしく落ちるが重くなる。"
+            "1 BU = 1cm のシーン前提"
+        ),
+        default=1.5,
+        min=0.2,
+        max=20.0,
+    )
+    auto_center_limbs: bpy.props.BoolProperty(
+        name="袖・カフを腕の軸に合わせる",
+        description=(
+            "袖やカフの筒を、素体の腕の断面中心へ軸と直交する2方向で寄せる。"
+            "持ち上げるだけでは縫合で筒が自分の重心へ閉じて袖がずり落ちる"
+        ),
+        default=True,
+    )
+    body_name: bpy.props.StringProperty(
+        name="素体",
+        description="腕の軸を測る素体メッシュ。読むだけで一切変更しない(空ならセンタリングを飛ばす)",
+        default="",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "OBJECT"
+
+    def invoke(self, context, event):
+        if not self.body_name:
+            active = context.active_object
+            if active is not None and active.type == "MESH":
+                self.body_name = active.name
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "target_edge")
+        layout.prop(self, "auto_center_limbs")
+        row = layout.row()
+        row.enabled = self.auto_center_limbs
+        row.prop_search(self, "body_name", context.scene, "objects")
+
+    def execute(self, context):
+        # build は mathutils / bmesh を使うので、フェイク bpy のテスト環境で
+        # import されないようここで遅延 import する(_coverage_weights と同じ理由)
+        from .garmentcode import build as gc_build
+
+        if not self.filepath.strip():
+            self.report({"ERROR"}, "spec ファイルを指定してください")
+            return {"CANCELLED"}
+
+        scale_warning = gc_spec.scale_length_warning(
+            getattr(context.scene.unit_settings, "scale_length", 1.0)
+        )
+        if scale_warning:
+            self.report({"WARNING"}, scale_warning)
+
+        try:
+            parsed = gc_spec.load_spec(bpy.path.abspath(self.filepath))
+        except gc_spec.SpecError as error:
+            self.report({"ERROR"}, "spec を読めませんでした: %s" % error)
+            return {"CANCELLED"}
+
+        body_points = []
+        if self.auto_center_limbs and self.body_name:
+            body = bpy.data.objects.get(self.body_name)
+            if body is None or body.type != "MESH":
+                self.report({"WARNING"}, "素体 %r が見つかりません" % self.body_name)
+            else:
+                body_points = gc_build.body_sample_points(
+                    context.evaluated_depsgraph_get(), body
+                )
+        elif self.auto_center_limbs:
+            self.report(
+                {"WARNING"},
+                "素体が指定されていないので袖・カフのセンタリングは行いません",
+            )
+
+        try:
+            assembled = gc_build.assemble(
+                parsed,
+                target_edge=self.target_edge,
+                body_points=body_points,
+                center_limbs=bool(self.auto_center_limbs and body_points),
+            )
+            created = gc_build.create_object(assembled, context.scene)
+        except (ValueError, RuntimeError) as error:
+            self.report({"ERROR"}, "取り込みに失敗しました: %s" % error)
+            return {"CANCELLED"}
+
+        info, warnings = garmentcode_import_report(assembled, parsed)
+        for line in warnings:
+            self.report({"WARNING"}, line)
+        for line in info:
+            self.report({"INFO"}, line)
+        self.report(
+            {"INFO"},
+            "%s に取り込みました。クロスは プロパティ > 物理演算 > クロス で設定してください"
+            % created["object"].name,
+        )
+        return {"FINISHED"}
+
+
+class MYPLUGIN_OT_weld_garmentcode_seams(bpy.types.Operator):
+    """縫合エッジで結ばれた頂点ペアだけを溶接した仕上げメッシュを作る"""
+
+    bl_idname = "myplugin.weld_garmentcode_seams"
+    bl_label = "縫い目を溶接"
+    bl_description = (
+        "アクティブな布メッシュの現在フレームの評価済み形状を複製し、"
+        "縫合エッジ(面を持たない孤立エッジ)で結ばれた頂点だけを溶接する。"
+        "距離ではなく繋がりで決めるので、座標が一致している別パネル同士は"
+        "溶接されない(マージ>距離で は溶接してしまう)。元のオブジェクトは無変更"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    remove_loose: bpy.props.BoolProperty(
+        name="残った孤立エッジを消す",
+        description="溶接後に残る面のないエッジと孤立頂点を削除する",
+        default=True,
+    )
+    max_gap: bpy.props.FloatProperty(
+        name="ギャップ警告のしきい値",
+        description="溶接前のギャップがこれを超えていたら、そこは縫合が失敗している疑いがある [cm]",
+        default=2.0,
+        min=0.0,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        active = context.active_object
+        return (
+            context.mode == "OBJECT" and active is not None and active.type == "MESH"
+        )
+
+    def execute(self, context):
+        # weld は bmesh を使うのでここで遅延 import する
+        from .garmentcode import weld as gc_weld
+
+        source = context.active_object
+        try:
+            duplicate = gc_weld.duplicate_evaluated(context, source)
+        except RuntimeError as error:
+            self.report({"ERROR"}, "評価済みメッシュを取得できません: %s" % error)
+            return {"CANCELLED"}
+
+        try:
+            stats = gc_weld.weld_sewing_pairs(duplicate, remove_loose=self.remove_loose)
+        except RuntimeError as error:
+            bpy.data.objects.remove(duplicate, do_unlink=True)
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+
+        self.report(
+            {"INFO"},
+            "%s: 縫合ペア %d 本を %d 箇所に溶接(頂点 %d → %d / 面コンポーネント %d)"
+            % (
+                duplicate.name,
+                stats["pairs"],
+                stats["groups"],
+                stats["before"]["verts"],
+                stats["after"]["verts"],
+                stats["components"],
+            ),
+        )
+        if stats["gap_max"] > self.max_gap:
+            self.report(
+                {"WARNING"},
+                "溶接前のギャップが最大 %.2fcm ありました(しきい値 %.2fcm)。"
+                "そこは縫合が閉じていない可能性があります"
+                % (stats["gap_max"], self.max_gap),
+            )
+        return {"FINISHED"}
+
+
 _classes = (
     MYPLUGIN_OT_hello,
     MYPLUGIN_OT_add_cube_grid,
     MYPLUGIN_OT_fit_body_to_corset,
     MYPLUGIN_OT_generate_costume,
     MYPLUGIN_OT_generate_costume_ai,
+    MYPLUGIN_OT_import_garmentcode,
+    MYPLUGIN_OT_weld_garmentcode_seams,
 )
 
 
