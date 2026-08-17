@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "name": "panty",
+  "assumed_height": 1.58,
+  "ease": 0.02,
+  "meters_per_unit": 1.0,
+  "poly_budget": 4000,
+  "materials": {
+    "main": {
+      "base_color": [
+        0.735,
+        0.735,
+        0.755
+      ],
+      "roughness": 0.74,
+      "sheen": 0.25
+    }
+  },
+  "parts": [
+    {
+      "type": "waistband",
+      "name": "Panty_Waistband",
+      "material": "main",
+      "params": {
+        "waist_z": 0.56,
+        "height": 0.02,
+        "segments": 32,
+        "rings": 2,
+        "flare": 1.0916,
+        "waist_drop": 0.06
+      }
+    },
+    {
+      "type": "pants",
+      "name": "Panty_Body",
+      "material": "main",
+      "params": {
+        "waist_z": 0.56,
+        "segments": 32,
+        "hip_rings": 6,
+        "leg_rings": 6,
+        "crotch_segments": 8,
+        "rise_scale": 1.0,
+        "inseam_scale": 0.03,
+        "thigh_ease": 0.0,
+        "knee_scale": 1.4468,
+        "hem_scale": 1.3439,
+        "blend": 0.3,
+        "leg_line": 0.7,
+        "seat": 0.25,
+        "waist_drop": 0.06
+      }
+    }
+  ],
+  "joints": [
+    {
+      "a": "Panty_Waistband",
+      "a_ring": "bottom",
+      "b": "Panty_Body",
+      "b_ring": "top",
+      "kind": "shared"
+    }
+  ]
+}

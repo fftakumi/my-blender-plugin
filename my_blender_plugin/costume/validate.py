@@ -413,6 +413,146 @@ def cross_intersections(mesh_a, mesh_b, cell, eps, skip_a=(), skip_b=()):
     return len(hits)
 
 
+# ------------------------------------------------------------------ 衣装に依らない不変条件
+#
+# ここの4つは「その衣装の定義」を1つも知らずに検査できる。パーツごとの寸法ゲートは
+# 定義した項目しか見ないので、定義していない欠陥(左右非対称・継ぎ目の稜線・
+# 体の突き抜け・厚みを付けたときの交差)は全ゲート緑のまま素通りした
+# (ブラウス・スク水・ショーツで3回)。未知の衣装が来ても効くのはこちら。
+
+
+def mirror_gap(verts, target_verts=None):
+    """各頂点を x 反転した点から、target(既定は自分)の最近傍頂点までの距離の最大。
+
+    衣装は左右対称なので 0 が正しい。位相のずれ(頂点の対応が回っている)は
+    寸法ゲートでは永久に捕まらない — 脚が円の間は周長も境界も同じ値を返す。
+    座標が一致する場合はハッシュで O(n)、ずれた頂点だけ総当たりで最近傍を探す。
+    """
+    target = verts if target_verts is None else target_verts
+    exact = {(round(x, 9), round(y, 9), round(z, 9)) for x, y, z in target}
+    worst = 0.0
+    for x, y, z in verts:
+        if (round(-x, 9), round(y, 9), round(z, 9)) in exact:
+            continue
+        nearest = min(
+            (qx + x) ** 2 + (qy - y) ** 2 + (qz - z) ** 2 for qx, qy, qz in target
+        )
+        worst = max(worst, math.sqrt(nearest))
+    return worst
+
+
+def joint_fold_degrees(mesh_a, ring_a, mesh_b, ring_b):
+    """shared 接合の継ぎ目をまたぐ布の折れ角(度)の最大。まっすぐ続けば 0。
+
+    shared 接合は「同じ布が続いている」という宣言なので、継ぎ目で折れていたら
+    設計の矛盾(腰穿きのショーツで、バンドは体に沿うのに本体が垂直に立って
+    17° の稜線が出た。層1・層2とも全緑で、レンダーの拡大でしか見えなかった)。
+    継ぎ目の各頂点で、両パーツの「継ぎ目から離れる軸方向の辺」の向きを比べる。
+    """
+    ring = set(mesh_a.rings.get(ring_a) or ())
+    other_set = set(mesh_b.rings.get(ring_b) or ())
+    by_coord = {
+        tuple(round(c, 9) for c in mesh_b.verts[index]): index for index in other_set
+    }
+
+    def axial_neighbours(mesh):
+        table = {}
+        for a, b in mesh.edge_kinds()["axial"]:
+            table.setdefault(a, []).append(b)
+            table.setdefault(b, []).append(a)
+        return table
+
+    axial_a = axial_neighbours(mesh_a)
+    axial_b = axial_neighbours(mesh_b)
+    worst = 0.0
+    for index in ring:
+        mate = by_coord.get(tuple(round(c, 9) for c in mesh_a.verts[index]))
+        if mate is None:
+            continue
+        mine = [n for n in axial_a.get(index, ()) if n not in ring]
+        theirs = [n for n in axial_b.get(mate, ()) if n not in other_set]
+        for na in mine:
+            da = _sub(mesh_a.verts[na], mesh_a.verts[index])
+            for nb in theirs:
+                db = _sub(mesh_b.verts[nb], mesh_b.verts[mate])
+                la, lb = _length(da), _length(db)
+                if la <= 0.0 or lb <= 0.0:
+                    continue
+                # まっすぐ = 反対向き。折れ角 = 180° からのずれ
+                cos = _dot(da, db) / (la * lb)
+                worst = max(
+                    worst, 180.0 - math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+                )
+    return worst
+
+
+def ring_encloses_axis(points, center=(0.0, 0.0)):
+    """リングが**体の軸**(既定は原点)のまわりを一周している = 胴を囲んでいるか。
+
+    tubular フラグは溶接(パンツ)で落ち、170° のエプロンには付いているので
+    当てにならない。巻き角を**軸**のまわりで数えるのが要点 — 自分の重心のまわりで
+    数えると、袖(腕を囲む)・脚口(脚を囲む)・エプロン(弧)まで一周扱いになり、
+    胴の寸法と比べてはいけないリングが混ざる(実測でその3種が誤検知した)。
+    """
+    cx, cy = center
+    total = 0.0
+    previous = None
+    for x, y, _z in points + points[:1]:
+        angle = math.atan2(y - cy, x - cx)
+        if previous is not None:
+            delta = angle - previous
+            while delta > math.pi:
+                delta -= 2.0 * math.pi
+            while delta < -math.pi:
+                delta += 2.0 * math.pi
+            total += delta
+        previous = angle
+    return abs(total) >= math.radians(350.0)
+
+
+def body_perimeter_at(drop_m, table):
+    """自然なウエストから drop_m 下がった高さの、素体(ゆとり無し)の胴回り。
+
+    spec の設計値とは**独立**の体モデル。設計値どうしの照合は「設計値ごと
+    間違っている」欠陥(腰穿きなのにウエスト周で作り、体より 13cm 細いのに
+    全ゲート緑)を素通しする。素体はサイズ表(素寸)だけから引く。
+    """
+    from . import modulate as modulate_module
+
+    body = table["body"]
+    return modulate_module.follow_measure(
+        1.0, drop_m, body["waist"], body["hip"], table["hip_drop"], 1.0
+    )
+
+
+def offset_shell_intersections(mesh, thickness_units, cell):
+    """布の厚みぶん法線方向へ押し出したシェルの自己交差数。
+
+    層1の面は交差していなくても、厚みを付けた瞬間に折り目の内側どうしが
+    ぶつかることがある(股のマチで実証。層2 = Blender の Solidify でしか
+    見えなかった)。Solidify の近似として頂点法線オフセットで層1に引き寄せる。
+    """
+    if thickness_units <= 0.0:
+        return 0
+    verts, faces = mesh.verts, mesh.quads
+    normals = [(0.0, 0.0, 0.0)] * len(verts)
+    for face in faces:
+        normal = face_normal(verts, face)
+        for index in face:
+            nx, ny, nz = normals[index]
+            normals[index] = (nx + normal[0], ny + normal[1], nz + normal[2])
+    offset = []
+    for point, normal in zip(verts, normals):
+        length = _length(normal)
+        if length <= 0.0:
+            offset.append(point)
+            continue
+        offset.append(
+            tuple(point[axis] + normal[axis] / length * thickness_units for axis in range(3))
+        )
+    return self_intersections(offset, faces, cell=cell, eps=1e-9)
+
+
 # ------------------------------------------------------------------ リングの寸法
 
 
@@ -490,6 +630,10 @@ def ring_metrics(verts, ring_indices):
         "verts": count,
         "center": (cx, cy, cz),
         "z": cz,
+        # 水平でないリング(脚ぐり・襟ぐり)を測るための上下端。水平なリングでは
+        # どちらも "z" と一致するので、平らな裾のパーツには影響しない
+        "z_min": min(point[2] for point in points),
+        "z_max": max(point[2] for point in points),
         "mean_radius": mean_radius,
         "radius_min": min(radii),
         "radius_max": max(radii),
@@ -822,12 +966,24 @@ def part_report(mesh, height_units):
     # ---- パンツの定義(docs/garments.md)を検証項目にしたもの ----
     if design.get("pants_rise"):
         crotch_ring = mesh.rings.get("crotch") or []
+        # マチ(股リングの一番低いところ)で測る。leg_line で脚ぐりを持ち上げると
+        # 平均は上がるが、股上・股下が問うているのは**マチの位置**。水平な股リング
+        # (ズボン・スク水)では最小値 = 平均なので従来の読みと同じ値になる
         crotch_z = (
-            sum(verts[index][2] for index in crotch_ring) / len(crotch_ring)
-            if crotch_ring
-            else None
+            min(verts[index][2] for index in crotch_ring) if crotch_ring else None
         )
         report["measured_crotch_z"] = crotch_z
+        if crotch_ring and design.get("pants_seat_ratio"):
+            # 尻の張り出し。股リングの後ろ(+Y)と前(-Y)の厚みの比で見る。
+            # 1.0 を期待する側(ズボン)では「断面が前後対称か」の検査になる
+            ys = [verts[index][1] for index in crotch_ring]
+            front_depth = abs(min(ys))
+            report["measured_seat_ratio"] = (
+                max(ys) / front_depth if front_depth > 0.0 else None
+            )
+            hard["pants_seat_ratio"] = _within(
+                report["measured_seat_ratio"], design["pants_seat_ratio"], PANTS_DIM_TOL
+            )
         if top is not None and crotch_z is not None:
             report["measured_rise"] = top["z"] - crotch_z
             hard["pants_rise"] = _within(
@@ -840,23 +996,39 @@ def part_report(mesh, height_units):
                 hard["pants_has_two_legs"] = _check(False, "hem_%s 無し" % side, "裾リング2本")
                 continue
             hems[side] = ring_metrics(verts, ring)
-            report["measured_hem_perimeter_" + side] = hems[side]["perimeter"]
+            # 「脚の太さ」を問う項目なので水平に投影した周長で測る。leg_line で
+            # 傾いた脚ぐりは実周長が上下動のぶん伸びて、太さと区別が付かなくなる
+            report["measured_hem_perimeter_" + side] = hems[side]["perimeter_xy"]
             hard["pants_hem_" + side] = _within(
-                hems[side]["perimeter"], design["pants_hem"], PANTS_DIM_TOL
+                hems[side]["perimeter_xy"], design["pants_hem"], PANTS_DIM_TOL
             )
             if crotch_z is not None:
-                report["measured_inseam_" + side] = crotch_z - hems[side]["z"]
+                report["measured_inseam_" + side] = crotch_z - hems[side]["z_min"]
                 hard["pants_inseam_" + side] = _within(
                     report["measured_inseam_" + side],
                     design["pants_inseam"],
                     PANTS_INSEAM_TOL,
                 )
+            if design.get("pants_leg_line") is not None:
+                # 脚ぐりが脇へ持ち上がっている量(ビキニ型かどうかを決める形)。
+                # 0 を期待する側(ズボン)では「水平に切れているか」の検査になるので、
+                # 比ではなく股上に対する絶対差で見る
+                span = hems[side]["z_max"] - hems[side]["z_min"]
+                report["measured_leg_line_" + side] = span
+                hard["pants_leg_line_" + side] = _check(
+                    abs(span - design["pants_leg_line"])
+                    <= design["pants_rise"] * PANTS_DIM_TOL,
+                    span,
+                    "%.4f ± %.4f" % (
+                        design["pants_leg_line"], design["pants_rise"] * PANTS_DIM_TOL
+                    ),
+                )
             thigh_ring = mesh.rings.get("thigh_" + side)
             if design.get("pants_thigh") and thigh_ring:
                 thigh = ring_metrics(verts, thigh_ring)
-                report["measured_thigh_perimeter_" + side] = thigh["perimeter"]
+                report["measured_thigh_perimeter_" + side] = thigh["perimeter_xy"]
                 hard["pants_thigh_" + side] = _within(
-                    thigh["perimeter"], design["pants_thigh"], PANTS_DIM_TOL
+                    thigh["perimeter_xy"], design["pants_thigh"], PANTS_DIM_TOL
                 )
         if len(hems) == 2:
             left_x = hems["l"]["center"][0]
@@ -1781,6 +1953,11 @@ def costume_report(built, normalized_spec):
         else:
             gap = joint_gap(mesh_a, joint["a_ring"], mesh_b, joint["b_ring"])
             tolerance = max(mean_edges[mesh_a.name], mean_edges[mesh_b.name]) * 1e-3
+        fold = (
+            joint_fold_degrees(mesh_a, joint["a_ring"], mesh_b, joint["b_ring"])
+            if kind == "shared"
+            else None
+        )
         joints.append(
             {
                 "a": joint["a"],
@@ -1791,6 +1968,7 @@ def costume_report(built, normalized_spec):
                 "gap": gap,
                 "ok": gap <= tolerance,
                 "tolerance": tolerance,
+                "fold_degrees": fold,
             }
         )
         joint_verts[mesh_a.name].update(mesh_a.rings[joint["a_ring"]])
@@ -1862,6 +2040,71 @@ def costume_report(built, normalized_spec):
         warn["edge_length_over_h"] = _check(
             low <= edge_over_h <= high, edge_over_h, "%.4f-%.4f" % (low, high)
         )
+
+    # ---- 衣装に依らない不変条件(定義していない欠陥を捕まえる網)----
+    from . import sizing as sizing_module
+
+    table = built["sizing"]
+    scale = 1.0 / normalized_spec["meters_per_unit"]
+    natural_waist_units = sizing_module.NATURAL_WAIST_Z * height_units
+    thickness_units = normalized_spec["fabric_thickness"] * height_units
+    for mesh in meshes:
+        tolerance = max(mean_edges[mesh.name] * 1e-6, 1e-12)
+        gap = mirror_gap(mesh.verts)
+        if mesh.name.endswith("_L") or mesh.name.endswith("_R"):
+            # 片側のパーツは相方との鏡像で見る(_L だけに載せて二重報告を避ける)
+            if mesh.name.endswith("_L"):
+                mate = by_name.get(mesh.name[:-2] + "_R")
+                if mate is not None:
+                    gap = mirror_gap(mesh.verts, mate.verts)
+                else:
+                    gap = None
+            else:
+                gap = None
+        if gap is not None:
+            warn["mirror.%s" % mesh.name] = _check(
+                gap <= tolerance, gap, "<= %.2e" % tolerance
+            )
+
+        if mesh.name not in trim:
+            # トリム(ボタン等の硬い部品)には Solidify を掛けないので対象外。
+            # ドームは法線オフセットで必ず自己交差する(頂点が中心へ集まる)
+            crossings_count = offset_shell_intersections(
+                mesh, thickness_units, cell=max(mean_edges[mesh.name] * 2.0, 1e-9)
+            )
+            warn["shell_intersections.%s" % mesh.name] = _check(
+                crossings_count == 0, crossings_count, 0
+            )
+
+        # 体の突き抜け: 胴の帯(股〜ウエスト)にある「体を囲む」リングは、
+        # その高さの素体より細くてはいけない。spec の設計値とは独立の照合なので、
+        # 「設計値ごと間違っている」欠陥(腰穿きなのにウエスト周で作った)に効く
+        for ring_name, indices in mesh.rings.items():
+            if len(indices) < 3:
+                continue
+            points = [mesh.verts[index] for index in indices]
+            if not ring_encloses_axis(points):
+                continue
+            metrics = ring_metrics(mesh.verts, indices)
+            drop_m = (natural_waist_units - metrics["z"]) / scale
+            # ウエストちょうどのリングが丸め誤差で帯から出ないよう下端を少し緩める
+            if not -1e-6 <= drop_m <= table["rise"]:
+                continue
+            body = body_perimeter_at(drop_m, table) * scale
+            # 多角形の周長は同じ半径の滑らかな断面より短い(弦の分)ので差し引く
+            chord = math.sin(math.pi / len(indices)) / (math.pi / len(indices))
+            floor = body * chord * (1.0 - DIM_TOL)
+            hard["body_clearance.%s.%s" % (mesh.name, ring_name)] = _check(
+                metrics["perimeter_xy"] >= floor,
+                metrics["perimeter_xy"],
+                ">= %.4f (素体 %.4f)" % (floor, body),
+            )
+
+    # 接合の折れ角は**測るだけ**(joints[].fold_degrees。precheck が表示する)。
+    # 実測: 襟は 63〜77° 折れるのが正しく(首の縫い目から立ち上がる)、プリーツの
+    # ウエストは 20°、腰穿きショーツの欠陥は 17° — 設計の折れと欠陥の折れが
+    # 同じ帯に混ざるので、衣装を知らない共通しきい値は引けない。
+    # 衣装ごとの上限はその衣装のテストが持つ(例: test_costume_panty の稜線検査)
 
     failed = sorted(key for key, value in hard.items() if not value["ok"])
     failed += ["%s.%s" % (report["part"], key) for report in parts for key in report["failed"]]

@@ -106,6 +106,7 @@ GARMENT_PRESETS = {
     "dress": "onepiece",
     "pants": "pants",
     "swimsuit": "swimsuit",
+    "panty": "panty",
 }
 
 #: 衣装の種類の見出し語。値は GARMENT_PRESETS のキー。
@@ -122,6 +123,12 @@ GARMENT_WORDS = {
     "ケープ": "cape", "cape": "cape", "マント": "cape", "ポンチョ": "cape",
     "ワンピース": "dress", "onepiece": "dress", "ドレス": "dress", "dress": "dress",
     "パンツ": "pants", "ズボン": "pants", "スラックス": "pants", "pants": "pants",
+    # 下着(ショーツ)。「パンツ」はズボンに取ってあるので**入れない** —
+    # 日本語の「パンツ」は両義だが、辞書は長い語を優先するだけで文脈は読めない。
+    # 「パンティー」「ショーツ」のように曖昧でない語だけを見出しにする
+    "パンティー": "panty", "パンティ": "panty", "ショーツ": "panty",
+    "下着": "panty", "panty": "panty", "panties": "panty",
+    "briefs": "panty", "knickers": "panty", "underwear": "panty",
     # 水着。「ワンピース水着」は「ワンピース」より長いので _find_words が先に拾い、
     # 部分語の重複採用も落とされる(ドレスに化けない)
     "スク水": "swimsuit", "スクール水着": "swimsuit", "スクミズ": "swimsuit",

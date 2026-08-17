@@ -157,6 +157,11 @@ def test_json_schema_hint_covers_every_preset_key():
                 # マテリアルのキー名(main 等)は自由な名前なので中身だけ見る
                 for material in value.values():
                     _collect_keys(material, keys)
+            elif key == "sizing":
+                # sizing は hint が明示的に「書いてはいけません」としている領域
+                # (中身の検証は sizing.py が持つ)。載っていないのが正しいので、
+                # 中身のキーは突き合わせない。preset は AI ではなく人が書くので使える
+                continue
             else:
                 _collect_keys(value, keys)
         missing = {key for key in keys if key not in hint}
